@@ -50,6 +50,19 @@
             noteEnabled: true,
             noteLabel: DEFAULT_SURVEY_NOTE_LABEL
         }];
+        const getLocalDateString = (date = new Date()) => {
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        };
+        const formatDateLabel = (dateText) => dateText ? dateText.replaceAll('-', '/') : '';
+        const isDateInRange = (dateText, startDate, endDate) => {
+            if (!dateText) return true;
+            if (startDate && dateText < startDate) return false;
+            if (endDate && dateText > endDate) return false;
+            return true;
+        };
 
         const buildSurveyQuestions = (config = {}) => {
             const source = config.surveyQuestionsConfigured === true
@@ -320,7 +333,7 @@
             const handleLogin = async (e) => {
                 e.preventDefault();
                 const inputHash = await hashPassword(pwd);
-                const isMatch = (ctx.appConfig.adminPasswordHash && inputHash === ctx.appConfig.adminPasswordHash) || pwd === 'admin1234';
+                const isMatch = ctx.appConfig.adminPasswordHash && inputHash === ctx.appConfig.adminPasswordHash;
 
                 if (isMatch) {
                     ctx.setIsAdminLoggedIn(true); ctx.setIsCaptainLoggedIn(true); setShowLoginModal(false); setCurrentPage('admin'); ctx.showMessage('最高權限驗證成功');
@@ -861,7 +874,7 @@
         };
 
         const RollCallPage = ({ ctx }) => {
-            const [filter, setFilter] = useState({ date: new Date().toISOString().split('T')[0], shift: 'morning', routeId: '' });
+            const [filter, setFilter] = useState({ date: getLocalDateString(), shift: 'morning', routeId: '' });
             const [captainPwd, setCaptainPwd] = useState('');
             const [showPwd, setShowPwd] = useState(false);
 
@@ -878,7 +891,7 @@
                             <form onSubmit={async (e) => {
                                 e.preventDefault();
                                 const inputHash = await hashPassword(captainPwd);
-                                const isMatch = (ctx.appConfig.rollCallPasswordHash && inputHash === ctx.appConfig.rollCallPasswordHash) || captainPwd === 'admin1234';
+                                const isMatch = ctx.appConfig.rollCallPasswordHash && inputHash === ctx.appConfig.rollCallPasswordHash;
                                 if (isMatch) { ctx.setIsCaptainLoggedIn(true); ctx.showMessage('車長驗證成功'); } else { ctx.showMessage('密碼錯誤', 'error'); }
                                 setCaptainPwd('');
                             }} className="p-6 space-y-4">
@@ -898,6 +911,13 @@
             const currentRoute = ctx.activeRoutes.find(r => r.id === filter.routeId);
             const routeStudents = ctx.studentsPublic.filter(s => s.routeId === filter.routeId);
             const currentSeating = ctx.seatingArrangements[filter.routeId]?.seats || {};
+            const rollCallClosed = ctx.appConfig.rollCallClosed === true;
+            const rollCallStartDate = ctx.appConfig.rollCallStartDate || '';
+            const rollCallEndDate = ctx.appConfig.rollCallEndDate || '';
+            const isRollCallDateOpen = !rollCallClosed && isDateInRange(filter.date, rollCallStartDate, rollCallEndDate);
+            const rollCallPeriodText = rollCallStartDate || rollCallEndDate
+                ? `${rollCallStartDate ? formatDateLabel(rollCallStartDate) : '未設定開始'} 至 ${rollCallEndDate ? formatDateLabel(rollCallEndDate) : '未設定結束'}`
+                : '未限制日期';
 
             const checkLeaveMatch = (l, s) => {
                 const lName = (l.studentName || '').trim(); const sName = (s.name || '').trim();
@@ -941,6 +961,10 @@
 
             const handleMark = async (studentId, newStatus, currentStatus) => {
                 if (!ctx.user) return;
+                if (!isRollCallDateOpen) {
+                    ctx.showMessage('目前不在車長點名期間，無法送出點名', 'error');
+                    return;
+                }
                 const recId = `${filter.date}-${filter.shift}-${filter.routeId}-${studentId}`;
                 try {
                     if (currentStatus === newStatus) {
@@ -953,6 +977,10 @@
 
             const handleBatchPresent = async () => {
                 if (!ctx.user) return;
+                if (!isRollCallDateOpen) {
+                    ctx.showMessage('目前不在車長點名期間，無法送出點名', 'error');
+                    return;
+                }
                 ctx.showConfirm('確定將「尚未標記」且「今日應搭車」的學生全部設為出席嗎？', async () => {
                     ctx.showMessage('批次處理中，請稍候...');
                     const promises = [];
@@ -986,6 +1014,17 @@
                         <div className="flex-1"><label className="block text-xs text-gray-500 mb-1">班次</label><select value={filter.shift} onChange={e => setFilter({...filter, shift: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none"><option value="morning">上學班次</option><option value="afternoon">放學班次</option></select></div>
                         <div className="flex-1"><label className="block text-xs text-gray-500 mb-1">路線</label><select value={filter.routeId} onChange={e => setFilter({...filter, routeId: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none">{ctx.activeRoutes.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
                     </div>
+                    {!isRollCallDateOpen && (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-amber-900 shadow-sm">
+                            <div className="flex items-start gap-3">
+                                <i className="ph-fill ph-calendar-x text-3xl text-amber-600"></i>
+                                <div>
+                                    <h3 className="font-black">目前不在車長點名期間</h3>
+                                    <p className="mt-1 text-sm leading-6">此期程設定的點名期間：{rollCallPeriodText}。若今天需要點名，請老師到後台「期程與表單」調整車長點名開放期間。</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
@@ -1043,7 +1082,7 @@
                         <div className="flex-1 flex flex-col gap-4">
                             <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-md border border-gray-100">
                                 <h3 className="font-bold text-gray-800 flex items-center"><i className="ph-fill ph-list-checks text-xl mr-2 text-indigo-600"></i>搭車名單</h3>
-                                <button onClick={handleBatchPresent} className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg font-bold shadow-sm transition flex items-center text-sm">
+                                <button onClick={handleBatchPresent} disabled={!isRollCallDateOpen} className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg font-bold shadow-sm transition flex items-center text-sm disabled:cursor-not-allowed disabled:bg-gray-300">
                                     <i className="ph-bold ph-check-double mr-2 text-lg"></i>一鍵全數到齊
                                 </button>
                             </div>
@@ -1065,8 +1104,8 @@
                                                     </td>
                                                     <td className="px-6 py-4">
                                                         <div className="flex space-x-2">
-                                                            <button onClick={() => handleMark(student.id, 'present', dbStatus)} className={`w-12 h-12 rounded-lg border flex items-center justify-center transition ${dbStatus === 'present' ? 'bg-green-500 text-white border-green-500 shadow-inner' : 'bg-white text-gray-400 hover:border-green-300'}`}><i className="ph-bold ph-check text-2xl"></i></button>
-                                                            <button onClick={() => handleMark(student.id, 'absent', dbStatus)} className={`w-12 h-12 rounded-lg border flex items-center justify-center transition ${dbStatus === 'absent' ? 'bg-red-500 text-white border-red-500 shadow-inner' : 'bg-white text-gray-400 hover:border-red-300'}`}><i className="ph-bold ph-x text-2xl"></i></button>
+                                                            <button onClick={() => handleMark(student.id, 'present', dbStatus)} disabled={!isRollCallDateOpen} className={`w-12 h-12 rounded-lg border flex items-center justify-center transition disabled:cursor-not-allowed disabled:opacity-40 ${dbStatus === 'present' ? 'bg-green-500 text-white border-green-500 shadow-inner' : 'bg-white text-gray-400 hover:border-green-300'}`}><i className="ph-bold ph-check text-2xl"></i></button>
+                                                            <button onClick={() => handleMark(student.id, 'absent', dbStatus)} disabled={!isRollCallDateOpen} className={`w-12 h-12 rounded-lg border flex items-center justify-center transition disabled:cursor-not-allowed disabled:opacity-40 ${dbStatus === 'absent' ? 'bg-red-500 text-white border-red-500 shadow-inner' : 'bg-white text-gray-400 hover:border-red-300'}`}><i className="ph-bold ph-x text-2xl"></i></button>
                                                         </div>
                                                     </td>
                                                 </tr>
@@ -1182,6 +1221,9 @@
                     returnOptions: Array.isArray(ctx.appConfig.returnOptions) ? ctx.appConfig.returnOptions : DEFAULT_RETURN_OPTIONS,
                     registrationClosed: ctx.appConfig.registrationClosed === true,
                     registrationDeadline: ctx.appConfig.registrationDeadline || '',
+                    rollCallClosed: ctx.appConfig.rollCallClosed === true,
+                    rollCallStartDate: ctx.appConfig.rollCallStartDate || '',
+                    rollCallEndDate: ctx.appConfig.rollCallEndDate || '',
                     ...updates,
                     sessionId: ctx.masterConfig.activeSessionId
                 });
@@ -1303,6 +1345,21 @@
                     surveyQuestionsConfigured: true
                 });
                 ctx.showMessage('報名表說明與自訂調查題目已更新');
+            };
+
+            const handleUpdateRollCallPeriod = async (e) => {
+                e.preventDefault();
+                const startDate = e.target.rollCallStartDate.value;
+                const endDate = e.target.rollCallEndDate.value;
+                if (startDate && endDate && startDate > endDate) {
+                    return ctx.showMessage('點名開始日期不能晚於結束日期', 'error');
+                }
+                await updateSessionFormConfig({
+                    rollCallClosed: e.target.rollCallClosed.checked,
+                    rollCallStartDate: startDate,
+                    rollCallEndDate: endDate
+                });
+                ctx.showMessage('車長點名開放期間已更新');
             };
 
             const updateSurveyDraft = (id, updates) => {
@@ -1656,7 +1713,7 @@
                         </div>
                         <div className="rounded-lg bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-800">
                             {adminTab === 'dashboard' && '查看每日搭車預估與無故缺席提醒。'}
-                            {adminTab === 'sessions' && '管理期程、報名說明、自訂問題與報名截止時間。'}
+                            {adminTab === 'sessions' && '管理期程、報名表設定、報名截止時間與車長點名期間。'}
                             {adminTab === 'routes' && '新增、隱藏、刪除路線，調整車站與人數上限。'}
                             {adminTab === 'leaves' && '查詢、修改或刪除家長送出的請假紀錄。'}
                             {adminTab === 'students' && '查看、篩選、匯出與編輯學生報名資料。'}
@@ -1786,6 +1843,34 @@
                                 ))}
                             </div>
                             <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 transition">儲存報名表設定</button>
+                        </form>
+                    </div>
+
+                    <div className={`${adminTab === 'sessions' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-teal-100 overflow-hidden`}>
+                        <div className="bg-teal-50 p-4 border-b border-teal-100 font-bold text-teal-800 flex items-center">
+                            <i className="ph-fill ph-clipboard-text text-2xl mr-2"></i> 車長點名開放期間
+                        </div>
+                        <form key={`${ctx.masterConfig?.activeSessionId || 'rollcall-settings'}-rollcall`} onSubmit={handleUpdateRollCallPeriod} className="p-6 space-y-4">
+                            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                                <label className="flex items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-3 text-sm font-bold text-gray-700">
+                                    <input name="rollCallClosed" type="checkbox" defaultChecked={ctx.appConfig.rollCallClosed === true} className="h-5 w-5 accent-teal-600" />
+                                    手動關閉車長點名
+                                </label>
+                                <div>
+                                    <label className="block text-xs font-bold text-teal-700 mb-1">點名開始日期</label>
+                                    <input name="rollCallStartDate" type="date" defaultValue={ctx.appConfig.rollCallStartDate || ''} className="w-full rounded-lg border border-teal-200 px-3 py-2 text-sm focus:ring-2 focus:ring-teal-500 outline-none" />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-teal-700 mb-1">點名結束日期</label>
+                                    <input name="rollCallEndDate" type="date" defaultValue={ctx.appConfig.rollCallEndDate || ''} className="w-full rounded-lg border border-teal-200 px-3 py-2 text-sm focus:ring-2 focus:ring-teal-500 outline-none" />
+                                </div>
+                            </div>
+                            <div className="rounded-lg bg-gray-50 px-4 py-3 text-xs leading-6 text-gray-600">
+                                <p className="font-bold text-gray-800">說明</p>
+                                <p>例如暑輔只需要 7/13 到 7/31 點名，就把開始日期設為 2026/07/13、結束日期設為 2026/07/31。</p>
+                                <p>不在期間內時，車長仍可登入查看，但不能送出點名，畫面會顯示「目前不在車長點名期間」。</p>
+                            </div>
+                            <button type="submit" className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white hover:bg-teal-700 transition">儲存點名期間</button>
                         </form>
                     </div>
 
@@ -2530,7 +2615,7 @@
             const [leaves, setLeaves] = useState([]);
             const [attendanceRecords, setAttendanceRecords] = useState([]);
             const [seatingArrangements, setSeatingArrangements] = useState({});
-            const [appConfig, setAppConfig] = useState({ adminPasswordHash: DEFAULT_PWD_HASH, rollCallPasswordHash: DEFAULT_PWD_HASH, registrationNotice: DEFAULT_REGISTRATION_NOTICE, surveyQuestions: [], surveyQuestionsConfigured: true, surveyTitle: DEFAULT_SURVEY_TITLE, surveyDescription: DEFAULT_SURVEY_DESCRIPTION, surveyNoteLabel: DEFAULT_SURVEY_NOTE_LABEL, surveyNoteEnabled: true, returnOptions: DEFAULT_RETURN_OPTIONS, registrationClosed: false, registrationDeadline: '' });
+            const [appConfig, setAppConfig] = useState({ adminPasswordHash: DEFAULT_PWD_HASH, rollCallPasswordHash: DEFAULT_PWD_HASH, registrationNotice: DEFAULT_REGISTRATION_NOTICE, surveyQuestions: [], surveyQuestionsConfigured: true, surveyTitle: DEFAULT_SURVEY_TITLE, surveyDescription: DEFAULT_SURVEY_DESCRIPTION, surveyNoteLabel: DEFAULT_SURVEY_NOTE_LABEL, surveyNoteEnabled: true, returnOptions: DEFAULT_RETURN_OPTIONS, registrationClosed: false, registrationDeadline: '', rollCallClosed: false, rollCallStartDate: '', rollCallEndDate: '' });
 
             // 1. 初始化 Auth 與全域主控設定 (Master Config)
             useEffect(() => {
@@ -2638,7 +2723,10 @@
                     surveyNoteEnabled: true,
                     returnOptions: DEFAULT_RETURN_OPTIONS,
                     registrationClosed: false,
-                    registrationDeadline: ''
+                    registrationDeadline: '',
+                    rollCallClosed: false,
+                    rollCallStartDate: '',
+                    rollCallEndDate: ''
                 };
                 const sessionFormConfigRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', `${sessionId}_main`);
                 const applyConfig = () => {
