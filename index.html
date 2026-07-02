@@ -333,7 +333,7 @@
             const handleLogin = async (e) => {
                 e.preventDefault();
                 const inputHash = await hashPassword(pwd);
-                const isMatch = (ctx.appConfig.adminPasswordHash && inputHash === ctx.appConfig.adminPasswordHash) || pwd === 'admin1234';
+                const isMatch = ctx.appConfig.adminPasswordHash && inputHash === ctx.appConfig.adminPasswordHash;
 
                 if (isMatch) {
                     ctx.setIsAdminLoggedIn(true); ctx.setIsCaptainLoggedIn(true); setShowLoginModal(false); setCurrentPage('admin'); ctx.showMessage('最高權限驗證成功');
@@ -891,7 +891,7 @@
                             <form onSubmit={async (e) => {
                                 e.preventDefault();
                                 const inputHash = await hashPassword(captainPwd);
-                                const isMatch = (ctx.appConfig.rollCallPasswordHash && inputHash === ctx.appConfig.rollCallPasswordHash) || captainPwd === 'admin1234';
+                                const isMatch = ctx.appConfig.rollCallPasswordHash && inputHash === ctx.appConfig.rollCallPasswordHash;
                                 if (isMatch) { ctx.setIsCaptainLoggedIn(true); ctx.showMessage('車長驗證成功'); } else { ctx.showMessage('密碼錯誤', 'error'); }
                                 setCaptainPwd('');
                             }} className="p-6 space-y-4">
