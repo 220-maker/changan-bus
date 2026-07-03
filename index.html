@@ -23,7 +23,7 @@
     <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const { useState, useEffect, useMemo } = React;
 
@@ -401,9 +401,14 @@
 
                 const lookupKey = await buildLookupKey(formData.parentName, formData.parentMobile);
                 const identityData = { ...formData, lookupKey };
-                const existingId = findExistingStudentId(ctx.students, identityData) || findExistingStudentId(ctx.studentsPublic, identityData);
-                const existingStudent = existingId ? (ctx.students.find(s => s.id === existingId) || ctx.studentsPublic.find(s => s.id === existingId)) : null;
-                if (!existingId && selectedRoute && selectedRoute.capacity && (ctx.routeCounts[selectedRoute.id] || 0) >= selectedRoute.capacity) {
+                const lookupMatches = lookupKey ? await ctx.findPublicStudentsByLookupKey(lookupKey) : [];
+                const existingPool = dedupeLatestStudents([...ctx.students, ...ctx.studentsPublic, ...lookupMatches]);
+                const existingId = findExistingStudentId(existingPool, identityData);
+                const existingStudent = existingId ? existingPool.find(s => s.id === existingId) : null;
+                const liveRouteCount = selectedRoute?.capacity
+                    ? (ctx.canSeeRoster ? (ctx.routeCounts[selectedRoute.id] || 0) : await ctx.countPublicStudentsByRoute(selectedRoute.id))
+                    : 0;
+                if (!existingId && selectedRoute && selectedRoute.capacity && liveRouteCount >= selectedRoute.capacity) {
                     return ctx.showMessage('非常抱歉，該路線名額已滿！', 'error');
                 }
 
@@ -448,8 +453,8 @@
                 } catch(err) { ctx.showMessage('連線錯誤', 'error'); }
             };
 
-            const currentRouteCount = ctx.routeCounts[formData.routeId] || 0;
-            const isSelectedRouteFull = selectedRoute && selectedRoute.capacity && currentRouteCount >= selectedRoute.capacity;
+            const currentRouteCount = ctx.canSeeRoster ? (ctx.routeCounts[formData.routeId] || 0) : null;
+            const isSelectedRouteFull = selectedRoute && selectedRoute.capacity && currentRouteCount !== null && currentRouteCount >= selectedRoute.capacity;
             const activeSessionName = ctx.masterConfig?.sessions?.find(s => s.id === ctx.masterConfig?.activeSessionId)?.name || '載入中...';
 
             if (submittedOk) {
@@ -524,8 +529,8 @@
                                             <label className="block text-xs text-gray-500 mb-1">路線</label>
                                             <select value={formData.routeId} onChange={e => { const r = ctx.activeRoutes.find(rt => rt.id === e.target.value); setFormData({...formData, routeId: e.target.value, stopName: r?.stops[0] || ''}); }} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white">
                                                 {ctx.activeRoutes.map(r => {
-                                                    const count = ctx.routeCounts[r.id] || 0;
-                                                    const isFull = r.capacity && count >= r.capacity;
+                                                    const count = ctx.canSeeRoster ? (ctx.routeCounts[r.id] || 0) : null;
+                                                    const isFull = r.capacity && count !== null && count >= r.capacity;
                                                     return <option key={r.id} value={r.id} disabled={isFull}>{r.name}{isFull ? ' - 已額滿' : ''}</option>
                                                 })}
                                             </select>
@@ -681,12 +686,16 @@
                 }
                 setLoading(true);
                 const lookupKey = await buildLookupKey(parentName, parentMobile);
-                const matched = ctx.studentsPublic
-                    .filter(s => s.lookupKey && s.lookupKey === lookupKey)
-                    .sort((a, b) => getStudentOrderValue(a) - getStudentOrderValue(b));
-                setResults(matched);
-                setSearched(true);
-                setLoading(false);
+                try {
+                    const matched = await ctx.findPublicStudentsByLookupKey(lookupKey);
+                    setResults(matched.sort((a, b) => getStudentOrderValue(a) - getStudentOrderValue(b)));
+                    setSearched(true);
+                } catch (err) {
+                    console.error(err);
+                    ctx.showMessage('查詢失敗，請稍後再試', 'error');
+                } finally {
+                    setLoading(false);
+                }
             };
 
             return (
@@ -874,7 +883,7 @@
         };
 
         const RollCallPage = ({ ctx }) => {
-            const [filter, setFilter] = useState({ date: getLocalDateString(), shift: 'morning', routeId: '' });
+            const [filter, setFilter] = useState({ date: getLocalDateString(), shift: 'morning', routeId: '', stopName: 'all' });
             const [captainPwd, setCaptainPwd] = useState('');
             const [showPwd, setShowPwd] = useState(false);
 
@@ -910,11 +919,13 @@
 
             const currentRoute = ctx.activeRoutes.find(r => r.id === filter.routeId);
             const routeStudents = ctx.studentsPublic.filter(s => s.routeId === filter.routeId);
+            const displayedStudents = filter.stopName === 'all' ? routeStudents : routeStudents.filter(s => s.stopName === filter.stopName);
             const currentSeating = ctx.seatingArrangements[filter.routeId]?.seats || {};
             const rollCallClosed = ctx.appConfig.rollCallClosed === true;
             const rollCallStartDate = ctx.appConfig.rollCallStartDate || '';
             const rollCallEndDate = ctx.appConfig.rollCallEndDate || '';
             const isRollCallDateOpen = !rollCallClosed && isDateInRange(filter.date, rollCallStartDate, rollCallEndDate);
+            const canEditRollCall = isRollCallDateOpen || ctx.isAdminLoggedIn;
             const rollCallPeriodText = rollCallStartDate || rollCallEndDate
                 ? `${rollCallStartDate ? formatDateLabel(rollCallStartDate) : '未設定開始'} 至 ${rollCallEndDate ? formatDateLabel(rollCallEndDate) : '未設定結束'}`
                 : '未限制日期';
@@ -961,7 +972,7 @@
 
             const handleMark = async (studentId, newStatus, currentStatus) => {
                 if (!ctx.user) return;
-                if (!isRollCallDateOpen) {
+                if (!canEditRollCall) {
                     ctx.showMessage('目前不在車長點名期間，無法送出點名', 'error');
                     return;
                 }
@@ -977,14 +988,14 @@
 
             const handleBatchPresent = async () => {
                 if (!ctx.user) return;
-                if (!isRollCallDateOpen) {
+                if (!canEditRollCall) {
                     ctx.showMessage('目前不在車長點名期間，無法送出點名', 'error');
                     return;
                 }
                 ctx.showConfirm('確定將「尚未標記」且「今日應搭車」的學生全部設為出席嗎？', async () => {
                     ctx.showMessage('批次處理中，請稍候...');
                     const promises = [];
-                    routeStudents.forEach(student => {
+                    displayedStudents.forEach(student => {
                         const { isFixedNoRide, isLeave, dbStatus } = getStudentStatusData(student);
                         if (!isFixedNoRide && !isLeave && !dbStatus) {
                             const recId = `${filter.date}-${filter.shift}-${filter.routeId}-${student.id}`;
@@ -1006,13 +1017,50 @@
                     }
                 });
             };
+            const deleteAttendanceRecords = async (records, successText) => {
+                if (!ctx.user || !ctx.isAdminLoggedIn) return ctx.showMessage('只有老師後台權限可以清除點名紀錄', 'error');
+                if (records.length === 0) return ctx.showMessage('目前沒有可清除的點名紀錄');
+                try {
+                    await Promise.all(records.map(r => deleteDoc(ctx.getDocRef('attendanceRecords', r.id))));
+                    ctx.showMessage(successText);
+                } catch (err) {
+                    console.error(err);
+                    ctx.showMessage('清除點名紀錄失敗，請檢查網路或 Firebase 權限', 'error');
+                }
+            };
+            const getCurrentShiftRecords = () => ctx.attendanceRecords.filter(r => r.date === filter.date && r.shift === filter.shift);
+            const handleClearAllRoutes = () => {
+                const records = getCurrentShiftRecords();
+                ctx.showConfirm(`確定清除 ${filter.date}「${filter.shift === 'morning' ? '上學' : '放學'}」全部路線的點名紀錄嗎？此動作只清除點名結果，不會刪報名資料。`, () => {
+                    deleteAttendanceRecords(records, `已清除全部路線 ${records.length} 筆點名紀錄`);
+                });
+            };
+            const handleClearCurrentRoute = () => {
+                const records = getCurrentShiftRecords().filter(r => r.routeId === filter.routeId);
+                ctx.showConfirm(`確定清除 ${currentRoute?.name || '目前路線'} ${filter.date}「${filter.shift === 'morning' ? '上學' : '放學'}」的點名紀錄嗎？`, () => {
+                    deleteAttendanceRecords(records, `已清除目前路線 ${records.length} 筆點名紀錄`);
+                });
+            };
+            const handleClearCurrentStop = () => {
+                if (filter.stopName === 'all') return ctx.showMessage('請先選擇要清除的站點', 'error');
+                const studentIds = new Set(routeStudents.filter(s => s.stopName === filter.stopName).map(s => s.id));
+                const records = getCurrentShiftRecords().filter(r => r.routeId === filter.routeId && studentIds.has(r.studentId));
+                ctx.showConfirm(`確定清除「${filter.stopName}」${filter.date}「${filter.shift === 'morning' ? '上學' : '放學'}」的點名紀錄嗎？`, () => {
+                    deleteAttendanceRecords(records, `已清除 ${filter.stopName} ${records.length} 筆點名紀錄`);
+                });
+            };
+            const handleClearStudentMark = (student) => {
+                const records = getCurrentShiftRecords().filter(r => r.routeId === filter.routeId && r.studentId === student.id);
+                deleteAttendanceRecords(records, `已清除 ${student.name || '該學生'} 的點名紀錄`);
+            };
 
             return (
                 <div className="max-w-7xl mx-auto p-4 space-y-6">
-                    <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100 flex flex-col md:flex-row gap-4">
+                    <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100 grid grid-cols-1 md:grid-cols-4 gap-4">
                         <div className="flex-1"><label className="block text-xs text-gray-500 mb-1">點名日期</label><input type="date" value={filter.date} onChange={e => setFilter({...filter, date: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                         <div className="flex-1"><label className="block text-xs text-gray-500 mb-1">班次</label><select value={filter.shift} onChange={e => setFilter({...filter, shift: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none"><option value="morning">上學班次</option><option value="afternoon">放學班次</option></select></div>
-                        <div className="flex-1"><label className="block text-xs text-gray-500 mb-1">路線</label><select value={filter.routeId} onChange={e => setFilter({...filter, routeId: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none">{ctx.activeRoutes.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
+                        <div className="flex-1"><label className="block text-xs text-gray-500 mb-1">路線</label><select value={filter.routeId} onChange={e => setFilter({...filter, routeId: e.target.value, stopName: 'all'})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none">{ctx.activeRoutes.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
+                        <div className="flex-1"><label className="block text-xs text-gray-500 mb-1">站點</label><select value={filter.stopName} onChange={e => setFilter({...filter, stopName: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white"><option value="all">全部站點</option>{(currentRoute?.stops || []).map(stop => <option key={stop} value={stop}>{stop}</option>)}</select></div>
                     </div>
                     {!isRollCallDateOpen && (
                         <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-amber-900 shadow-sm">
@@ -1082,16 +1130,25 @@
                         <div className="flex-1 flex flex-col gap-4">
                             <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-md border border-gray-100">
                                 <h3 className="font-bold text-gray-800 flex items-center"><i className="ph-fill ph-list-checks text-xl mr-2 text-indigo-600"></i>搭車名單</h3>
-                                <button onClick={handleBatchPresent} disabled={!isRollCallDateOpen} className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg font-bold shadow-sm transition flex items-center text-sm disabled:cursor-not-allowed disabled:bg-gray-300">
-                                    <i className="ph-bold ph-check-double mr-2 text-lg"></i>一鍵全數到齊
-                                </button>
+                                <div className="flex flex-wrap justify-end gap-2">
+                                    {ctx.isAdminLoggedIn && (
+                                        <>
+                                            <button onClick={handleClearAllRoutes} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 transition hover:bg-red-100"><i className="ph-bold ph-trash mr-1"></i>清空全部路線</button>
+                                            <button onClick={handleClearCurrentRoute} className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs font-bold text-orange-700 transition hover:bg-orange-100"><i className="ph-bold ph-eraser mr-1"></i>清空此路線</button>
+                                            <button onClick={handleClearCurrentStop} disabled={filter.stopName === 'all'} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"><i className="ph-bold ph-map-pin-line mr-1"></i>清空此站點</button>
+                                        </>
+                                    )}
+                                    <button onClick={handleBatchPresent} disabled={!canEditRollCall} className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg font-bold shadow-sm transition flex items-center text-sm disabled:cursor-not-allowed disabled:bg-gray-300">
+                                        <i className="ph-bold ph-check-double mr-2 text-lg"></i>一鍵全數到齊
+                                    </button>
+                                </div>
                             </div>
 
                             <div className="bg-white rounded-xl shadow-md overflow-hidden border border-gray-100">
                                 <table className="w-full text-left">
                                     <thead className="bg-gray-50 border-b"><tr><th className="px-6 py-3 text-sm font-semibold text-gray-600">學生資訊</th><th className="px-6 py-3 text-sm font-semibold text-gray-600">手動點名操作</th></tr></thead>
                                     <tbody className="divide-y divide-gray-50">
-                                        {routeStudents.map(student => {
+                                        {displayedStudents.map(student => {
                                             const { isFixedNoRide, isLeave, dbStatus } = getStudentStatusData(student);
                                             const isGreyOut = isFixedNoRide || isLeave;
                                             return (
@@ -1103,9 +1160,12 @@
                                                         {!isFixedNoRide && isLeave && <div className="mt-2 text-[11px] font-bold text-yellow-700 bg-yellow-100 border border-yellow-200 inline-block px-2 py-0.5 rounded">系統提醒：已填寫請假申請</div>}
                                                     </td>
                                                     <td className="px-6 py-4">
-                                                        <div className="flex space-x-2">
-                                                            <button onClick={() => handleMark(student.id, 'present', dbStatus)} disabled={!isRollCallDateOpen} className={`w-12 h-12 rounded-lg border flex items-center justify-center transition disabled:cursor-not-allowed disabled:opacity-40 ${dbStatus === 'present' ? 'bg-green-500 text-white border-green-500 shadow-inner' : 'bg-white text-gray-400 hover:border-green-300'}`}><i className="ph-bold ph-check text-2xl"></i></button>
-                                                            <button onClick={() => handleMark(student.id, 'absent', dbStatus)} disabled={!isRollCallDateOpen} className={`w-12 h-12 rounded-lg border flex items-center justify-center transition disabled:cursor-not-allowed disabled:opacity-40 ${dbStatus === 'absent' ? 'bg-red-500 text-white border-red-500 shadow-inner' : 'bg-white text-gray-400 hover:border-red-300'}`}><i className="ph-bold ph-x text-2xl"></i></button>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            <button onClick={() => handleMark(student.id, 'present', dbStatus)} disabled={!canEditRollCall} className={`w-12 h-12 rounded-lg border flex items-center justify-center transition disabled:cursor-not-allowed disabled:opacity-40 ${dbStatus === 'present' ? 'bg-green-500 text-white border-green-500 shadow-inner' : 'bg-white text-gray-400 hover:border-green-300'}`} title="設為已到"><i className="ph-bold ph-check text-2xl"></i></button>
+                                                            <button onClick={() => handleMark(student.id, 'absent', dbStatus)} disabled={!canEditRollCall} className={`w-12 h-12 rounded-lg border flex items-center justify-center transition disabled:cursor-not-allowed disabled:opacity-40 ${dbStatus === 'absent' ? 'bg-red-500 text-white border-red-500 shadow-inner' : 'bg-white text-gray-400 hover:border-red-300'}`} title="設為未到"><i className="ph-bold ph-x text-2xl"></i></button>
+                                                            {ctx.isAdminLoggedIn && (
+                                                                <button onClick={() => handleClearStudentMark(student)} disabled={!dbStatus} className="h-12 rounded-lg border border-gray-200 bg-white px-3 text-xs font-bold text-gray-500 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40" title="清除此學生點名紀錄">清除</button>
+                                                            )}
                                                         </div>
                                                     </td>
                                                 </tr>
@@ -2676,24 +2736,36 @@
                 if (!user || !isMasterReady || !masterConfig?.activeSessionId) return;
                 const sessionId = masterConfig.activeSessionId;
 
-                const uPublic = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'students_public'), snap => {
-                    setStudentsPublic(filterAndMapSessionDocs(snap.docs, sessionId));
-                }, console.error);
+                const canSeeRoster = isAdminLoggedIn || isCaptainLoggedIn;
+                let uPublic = () => {};
+                let uLeaves = () => {};
+                let uAttendance = () => {};
+                let uSeating = () => {};
+                if (canSeeRoster) {
+                    uPublic = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'students_public'), snap => {
+                        setStudentsPublic(filterAndMapSessionDocs(snap.docs, sessionId));
+                    }, console.error);
 
-                const uLeaves = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'leaves'), snap => {
-                    setLeaves(filterAndMapSessionDocs(snap.docs, sessionId));
-                }, console.error);
+                    uLeaves = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'leaves'), snap => {
+                        setLeaves(filterAndMapSessionDocs(snap.docs, sessionId));
+                    }, console.error);
 
-                const uAttendance = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'attendanceRecords'), snap => {
-                    setAttendanceRecords(filterAndMapSessionDocs(snap.docs, sessionId));
-                }, console.error);
+                    uAttendance = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'attendanceRecords'), snap => {
+                        setAttendanceRecords(filterAndMapSessionDocs(snap.docs, sessionId));
+                    }, console.error);
 
-                const uSeating = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'seatingArrangements'), snap => {
-                    const mapped = filterAndMapSessionDocs(snap.docs, sessionId);
-                    const dict = {};
-                    mapped.forEach(d => { dict[d.id] = d; });
-                    setSeatingArrangements(dict);
-                }, console.error);
+                    uSeating = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'seatingArrangements'), snap => {
+                        const mapped = filterAndMapSessionDocs(snap.docs, sessionId);
+                        const dict = {};
+                        mapped.forEach(d => { dict[d.id] = d; });
+                        setSeatingArrangements(dict);
+                    }, console.error);
+                } else {
+                    setStudentsPublic([]);
+                    setLeaves([]);
+                    setAttendanceRecords([]);
+                    setSeatingArrangements({});
+                }
 
                 const uRoutes = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'routes'), snap => {
                     const mapped = filterAndMapSessionDocs(snap.docs, sessionId);
@@ -2763,7 +2835,7 @@
                 }, console.error);
 
                 return () => { uPublic(); uLeaves(); uAttendance(); uSeating(); uRoutes(); uConfig(); uSessionConfig(); };
-            }, [user, isMasterReady, masterConfig?.activeSessionId]);
+            }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, isCaptainLoggedIn]);
 
             // 3. 監聽私有資料 (僅管理員)
             useEffect(() => {
@@ -2798,6 +2870,22 @@
             const getDocRef = (colName, docId) => {
                 return doc(db, 'artifacts', appId, 'public', 'data', colName, `${masterConfig.activeSessionId}_${docId}`);
             };
+            const getCollectionRef = (colName) => {
+                return collection(db, 'artifacts', appId, 'public', 'data', colName);
+            };
+            const querySessionDocsByField = async (colName, fieldName, value) => {
+                if (!masterConfig?.activeSessionId || value === undefined || value === null || value === '') return [];
+                const snap = await getDocs(query(getCollectionRef(colName), where(fieldName, '==', value)));
+                return filterAndMapSessionDocs(snap.docs, masterConfig.activeSessionId);
+            };
+            const findPublicStudentsByLookupKey = async (lookupKey) => {
+                const matches = await querySessionDocsByField('students_public', 'lookupKey', lookupKey);
+                return dedupeLatestStudents(matches);
+            };
+            const countPublicStudentsByRoute = async (routeId) => {
+                const matches = await querySessionDocsByField('students_public', 'routeId', routeId);
+                return dedupeLatestStudents(matches).length;
+            };
 
             useEffect(() => {
                 if (!user || !isMasterReady || !masterConfig?.activeSessionId || !isAdminLoggedIn) return;
@@ -2826,7 +2914,8 @@
                 })();
             }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, studentsPublic, studentsPrivate]);
 
-            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, setIsAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, hashPassword, getDocRef, routeCounts };
+            const canSeeRoster = isAdminLoggedIn || isCaptainLoggedIn;
+            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, setIsAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, hashPassword, getDocRef, routeCounts, canSeeRoster, findPublicStudentsByLookupKey, countPublicStudentsByRoute };
 
             const renderContent = () => {
                 switch (currentPage) {
