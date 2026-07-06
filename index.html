@@ -56,6 +56,28 @@
             const d = String(date.getDate()).padStart(2, '0');
             return `${y}-${m}-${d}`;
         };
+        const getLocalDateTimeLabel = (date = new Date()) => {
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            const hh = String(date.getHours()).padStart(2, '0');
+            const mm = String(date.getMinutes()).padStart(2, '0');
+            return `${y}-${m}-${d}_${hh}-${mm}`;
+        };
+        const safeFileName = (value, fallback = '未命名') => {
+            const clean = String(value || '').trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '');
+            return clean || fallback;
+        };
+        const downloadTextFile = (content, filename, type = 'text/plain;charset=utf-8;') => {
+            const blob = new Blob([content], { type });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(link.href);
+        };
         const formatDateLabel = (dateText) => dateText ? dateText.replaceAll('-', '/') : '';
         const isDateInRange = (dateText, startDate, endDate) => {
             if (!dateText) return true;
@@ -1247,6 +1269,10 @@
                 if (studentRouteFilter === 'all') return ctx.students;
                 return ctx.students.filter(s => s.routeId === studentRouteFilter);
             }, [ctx.students, studentRouteFilter]);
+            const currentSessionName = useMemo(() => {
+                const sessions = ctx.masterConfig?.sessions || [];
+                return sessions.find(s => s.id === ctx.masterConfig?.activeSessionId)?.name || ctx.masterConfig?.activeSessionId || '未命名期程';
+            }, [ctx.masterConfig]);
 
             const adminTabs = [
                 { id: 'dashboard', label: '總覽', icon: 'ph-chart-line-up' },
@@ -1667,6 +1693,68 @@
                 });
             };
 
+            const collectSessionDocs = async (colName, sessionId, options = {}) => {
+                const snap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', colName));
+                const prefix = `${sessionId}_`;
+                return snap.docs
+                    .filter(d => {
+                        if (options.includeMain && d.id === 'main') return true;
+                        return d.id.startsWith(prefix);
+                    })
+                    .map(d => ({
+                        id: d.id.startsWith(prefix) ? d.id.slice(prefix.length) : d.id,
+                        fullDocId: d.id,
+                        data: d.data()
+                    }));
+            };
+
+            const handleDownloadFullBackup = async () => {
+                if (!ctx.user || !ctx.masterConfig?.activeSessionId) {
+                    ctx.showMessage('目前沒有可備份的期程', 'error');
+                    return;
+                }
+                const sessionId = ctx.masterConfig.activeSessionId;
+                const sessionName = currentSessionName;
+                const exportedAt = new Date();
+                const collections = ['students_public', 'students_private', 'routes', 'leaves', 'attendanceRecords', 'seatingArrangements'];
+
+                try {
+                    ctx.showMessage('正在整理完整備份，請稍候...');
+                    const backupCollections = {};
+                    for (const colName of collections) {
+                        backupCollections[colName] = await collectSessionDocs(colName, sessionId);
+                    }
+                    backupCollections.config = await collectSessionDocs('config', sessionId, { includeMain: true });
+
+                    const backup = {
+                        schemaVersion: 1,
+                        exportedAt: exportedAt.toISOString(),
+                        appId,
+                        suggestedFolder: `交通車備份/${safeFileName(sessionName)}`,
+                        session: { id: sessionId, name: sessionName },
+                        counts: {
+                            students: ctx.students.length,
+                            studentsPublicDocs: backupCollections.students_public.length,
+                            studentsPrivateDocs: backupCollections.students_private.length,
+                            routes: backupCollections.routes.length,
+                            leaves: backupCollections.leaves.length,
+                            attendanceRecords: backupCollections.attendanceRecords.length,
+                            seatingArrangements: backupCollections.seatingArrangements.length,
+                            configDocs: backupCollections.config.length
+                        },
+                        masterConfig: ctx.masterConfig,
+                        collections: backupCollections
+                    };
+
+                    const fileName = `${safeFileName(sessionName)}_校車完整備份_${getLocalDateTimeLabel(exportedAt)}.json`;
+                    downloadTextFile(JSON.stringify(backup, null, 2), fileName, 'application/json;charset=utf-8;');
+                    ctx.showMessage(`完整備份已下載：${ctx.students.length} 位學生、${backupCollections.routes.length} 條路線`);
+                } catch (err) {
+                    console.error(err);
+                    ctx.showMessage('完整備份失敗，請檢查網路連線或 Firebase 權限', 'error');
+                }
+            };
+
             const openEditModal = (student) => { setEditFormData({ ...student, noRide: student.noRide || {} }); setEditModalOpen(true); };
             const toggleEditNoRide = (day, shift) => {
                 const key = `${day}-${shift}`;
@@ -1720,8 +1808,9 @@
                 const BOM = '\uFEFF';
                 const surveyQuestions = buildSurveyQuestions(ctx.appConfig);
                 const surveyHeaders = surveyQuestions.flatMap(q => [q.title, `${q.title}備註`]);
-                let csv = BOM + ["學號","班級","座號","姓名","性別","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","通訊地址"].join(",") + "\n";
-                ctx.students.forEach(s => {
+                const headers = ["學號","班級","座號","姓名","性別","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","通訊地址"];
+                const escapeCsv = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
+                const buildStudentRow = (s) => {
                     const routeName = ctx.routes.find(r => r.id === s.routeId)?.name || '';
                     const noRideText = formatNoRide(s.noRide);
                     const surveyValues = surveyQuestions.flatMap((q, idx) => {
@@ -1729,15 +1818,56 @@
                         const note = s.surveyNotes?.[q.id] || (idx === 0 ? (s.returnNote || '') : '');
                         return [answer, note];
                     });
-                    const row = [s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.commAddr || ''];
-                    csv += row.map(v => `"${String(v).replaceAll('"', '""')}"`).join(",") + "\n";
-                });
-                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                const link = document.createElement('a');
+                    return [s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.commAddr || ''];
+                };
+                const sortForRoute = (list, route) => {
+                    const stopOrder = route?.stops || [];
+                    return [...list].sort((a, b) => {
+                        const aStop = stopOrder.indexOf(a.stopName);
+                        const bStop = stopOrder.indexOf(b.stopName);
+                        const stopDiff = (aStop === -1 ? 999 : aStop) - (bStop === -1 ? 999 : bStop);
+                        if (stopDiff !== 0) return stopDiff;
+                        const classDiff = String(a.class || '').localeCompare(String(b.class || ''), 'zh-Hant', { numeric: true });
+                        if (classDiff !== 0) return classDiff;
+                        return (parseInt(a.seat) || 999) - (parseInt(b.seat) || 999);
+                    });
+                };
                 const routeLabel = studentRouteFilter === 'all' ? '全部學生' : (ctx.routes.find(r => r.id === studentRouteFilter)?.name || '指定路線');
-                link.href = URL.createObjectURL(blob);
-                link.download = `學生名單_${routeLabel}_${new Date().toISOString().split('T')[0]}.csv`;
-                link.click(); URL.revokeObjectURL(link.href);
+                let csv = BOM;
+
+                if (studentRouteFilter === 'all') {
+                    csv += [`期程：${currentSessionName}`, `匯出日期：${getLocalDateString()}`, `總人數：${ctx.students.length}`].map(escapeCsv).join(",") + "\n\n";
+                    const routeGroups = ctx.routes.map(route => ({
+                        route,
+                        students: ctx.students.filter(s => s.routeId === route.id)
+                    }));
+                    const noRouteStudents = ctx.students.filter(s => !ctx.routes.some(route => route.id === s.routeId));
+                    routeGroups.forEach(({ route, students }) => {
+                        csv += [route.name, `${students.length}人`].map(escapeCsv).join(",") + "\n";
+                        csv += headers.map(escapeCsv).join(",") + "\n";
+                        sortForRoute(students, route).forEach(s => {
+                            csv += buildStudentRow(s).map(escapeCsv).join(",") + "\n";
+                        });
+                        csv += "\n";
+                    });
+                    if (noRouteStudents.length > 0) {
+                        csv += ['未指定路線', `${noRouteStudents.length}人`].map(escapeCsv).join(",") + "\n";
+                        csv += headers.map(escapeCsv).join(",") + "\n";
+                        sortForRoute(noRouteStudents, null).forEach(s => {
+                            csv += buildStudentRow(s).map(escapeCsv).join(",") + "\n";
+                        });
+                    }
+                } else {
+                    const route = ctx.routes.find(r => r.id === studentRouteFilter);
+                    csv += [`期程：${currentSessionName}`, `路線：${routeLabel}`, `匯出日期：${getLocalDateString()}`, `人數：${visibleStudents.length}`].map(escapeCsv).join(",") + "\n\n";
+                    csv += headers.map(escapeCsv).join(",") + "\n";
+                    sortForRoute(visibleStudents, route).forEach(s => {
+                        csv += buildStudentRow(s).map(escapeCsv).join(",") + "\n";
+                    });
+                }
+
+                const fileName = `${safeFileName(currentSessionName)}_學生名單_${safeFileName(routeLabel)}_${getLocalDateString()}.csv`;
+                downloadTextFile(csv, fileName, 'text/csv;charset=utf-8;');
             };
 
             const exportToPDF = () => {
@@ -2255,6 +2385,26 @@
                         </div>
                     </div>
 
+                    <div className={`${adminTab === 'settings' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-emerald-200 overflow-hidden mt-8`}>
+                        <div className="bg-emerald-50 p-4 border-b border-emerald-100 font-bold text-emerald-800 flex items-center">
+                            <i className="ph-fill ph-floppy-disk text-xl mr-2 text-emerald-600"></i> 完整資料備份
+                        </div>
+                        <div className="p-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                            <div className="space-y-2">
+                                <h4 className="font-bold text-gray-800">下載目前期程的完整備份</h4>
+                                <p className="text-sm text-gray-600">
+                                    目前期程：<span className="font-bold text-emerald-700">{currentSessionName}</span>
+                                    <span className="ml-2 text-gray-400">({ctx.masterConfig?.activeSessionId || '尚未取得期程 ID'})</span>
+                                </p>
+                                <p className="text-sm text-gray-500">備份會包含學生資料、路線、請假、點名、座位與系統設定；按下後只會下載檔案，不會修改 Firebase 資料。</p>
+                                <p className="text-xs font-bold text-emerald-700">建議放置：學校事務 / 交通車備份 / {safeFileName(currentSessionName)}</p>
+                            </div>
+                            <button onClick={handleDownloadFullBackup} className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition shadow-md whitespace-nowrap flex items-center justify-center">
+                                <i className="ph-bold ph-download-simple mr-2"></i> 下載完整備份 JSON
+                            </button>
+                        </div>
+                    </div>
+
                     <div className={`${adminTab === 'settings' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-red-200 overflow-hidden mt-8`}>
                         <div className="bg-red-50 p-4 border-b border-red-100 font-bold text-red-800 flex items-center">
                             <i className="ph-fill ph-warning-octagon text-xl mr-2 text-red-600"></i> 系統危險操作區域 (Danger Zone)
@@ -2430,7 +2580,7 @@
             if (!ctx.isAdminLoggedIn) return null;
 
             const currentSeating = ctx.seatingArrangements[routeId]?.seats || {};
-            const routeStudents = ctx.studentsPublic.filter(s => s.routeId === routeId);
+            const routeStudents = ctx.students.filter(s => s.routeId === routeId);
             const assignedStudentIds = Object.values(currentSeating).map(s => s.studentId);
             const unassignedStudents = routeStudents.filter(s => !assignedStudentIds.includes(s.id));
             const currentRoute = ctx.activeRoutes.find(r => r.id === routeId);
@@ -2450,6 +2600,19 @@
                 if (classDiff !== 0) return classDiff;
                 return (parseInt(a.seat) || 999) - (parseInt(b.seat) || 999);
             });
+            const normalizeSeatNote = (student) => String(student?.seatNote || '').replace(/\s+/g, '');
+            const hasFrontSeatNeed = (student) => /暈車|晕车|容易暈|容易晕|會暈|会晕|前排|坐前|前面|車頭|车头/.test(normalizeSeatNote(student));
+            const hasSiblingSeatNeed = (student) => /兄弟|姊妹|姐妹|兄妹|姐弟|姊弟|手足|坐一起|一起坐|坐附近|坐旁邊|坐旁边/.test(normalizeSeatNote(student));
+            const getSeatRow = (seatId) => parseInt(String(seatId).split('-')[0], 10) || 999;
+            const getPreferredSide = (student) => student?.gender === '女' ? 'R' : 'L';
+            const getSiblingGroupSide = (students) => {
+                const notes = students.map(normalizeSeatNote).join('，');
+                if (/姐弟|姊弟/.test(notes)) return 'R';
+                if (/兄妹/.test(notes)) return 'L';
+                const genders = new Set(students.map(s => s.gender));
+                if (genders.size === 1) return genders.has('女') ? 'R' : 'L';
+                return students.some(s => s.gender === '男') ? 'L' : 'R';
+            };
             const seatPayload = (student, existing = {}) => ({
                 studentId: student.id,
                 color: existing.color || getGenderSeatColor(student.gender),
@@ -2465,21 +2628,110 @@
                     });
                     const lockedStudentIds = Object.values(lockedSeats).map(s => s.studentId);
                     const remainingStudents = sortStudentsForSeating(routeStudents.filter(s => !lockedStudentIds.includes(s.id)));
-                    let boys = remainingStudents.filter(s => s.gender === '男');
-                    let girls = remainingStudents.filter(s => s.gender === '女');
                     const newSeats = { ...lockedSeats };
-                    const lefts = SHARED_SEAT_LAYOUT.filter(s => s.side === 'L' && !newSeats[s.id]).map(s => s.id);
-                    const rights = SHARED_SEAT_LAYOUT.filter(s => s.side === 'R' && !newSeats[s.id]).map(s => s.id);
-                    const mids = SHARED_SEAT_LAYOUT.filter(s => s.side === 'M' && !newSeats[s.id]).map(s => s.id);
-                    lefts.forEach(id => { if (boys.length) newSeats[id] = seatPayload(boys.shift()); });
-                    rights.forEach(id => { if (girls.length) newSeats[id] = seatPayload(girls.shift()); });
-                    const overflowRight = rights.filter(id => !newSeats[id]).reverse();
-                    const overflowLeft = lefts.filter(id => !newSeats[id]).reverse();
-                    boys.forEach(b => { if (overflowRight.length) newSeats[overflowRight.shift()] = seatPayload(b); else if (mids.length) newSeats[mids.shift()] = seatPayload(b); });
-                    girls.forEach(g => { if (overflowLeft.length) newSeats[overflowLeft.shift()] = seatPayload(g); else if (mids.length) newSeats[mids.shift()] = seatPayload(g); });
+                    const seatItems = SHARED_SEAT_LAYOUT.filter(s => s.type === 'seat');
+                    const seatOrder = (a, b) => seatItems.findIndex(s => s.id === a) - seatItems.findIndex(s => s.id === b);
+                    const availableSeatIds = ({ side, frontOnly = false } = {}) => seatItems
+                        .filter(s => !newSeats[s.id])
+                        .filter(s => !side || s.side === side)
+                        .filter(s => !frontOnly || getSeatRow(s.id) <= 3)
+                        .map(s => s.id);
+                    const findSeatBlock = (count, side, frontOnly = false) => {
+                        for (let row = 1; row <= 11; row++) {
+                            if (frontOnly && row > 3) break;
+                            const rowSeats = seatItems
+                                .filter(s => getSeatRow(s.id) === row && s.side === side && !newSeats[s.id])
+                                .map(s => s.id)
+                                .sort(seatOrder);
+                            if (rowSeats.length >= count) return rowSeats.slice(0, count);
+                        }
+                        return [];
+                    };
+                    const chooseSeats = (count, preferredSide, options = {}) => {
+                        const frontOnly = options.frontOnly === true;
+                        const preferredBlock = findSeatBlock(count, preferredSide, frontOnly);
+                        if (preferredBlock.length === count) return preferredBlock;
+                        const preferredSeats = availableSeatIds({ side: preferredSide, frontOnly });
+                        if (preferredSeats.length >= count) return preferredSeats.slice(0, count);
+                        const frontSeats = frontOnly ? availableSeatIds({ frontOnly: true }) : [];
+                        if (frontSeats.length >= count) return frontSeats.slice(0, count);
+                        const normalBlock = findSeatBlock(count, preferredSide, false);
+                        if (normalBlock.length === count) return normalBlock;
+                        const normalPreferred = availableSeatIds({ side: preferredSide });
+                        if (normalPreferred.length >= count) return normalPreferred.slice(0, count);
+                        const otherSide = preferredSide === 'L' ? 'R' : 'L';
+                        const otherBlock = findSeatBlock(count, otherSide, false);
+                        if (otherBlock.length === count) return otherBlock;
+                        const anySeats = availableSeatIds();
+                        return anySeats.slice(0, count);
+                    };
+                    const placeStudents = (studentsToPlace, preferredSide, options = {}) => {
+                        const seats = chooseSeats(studentsToPlace.length, preferredSide, options);
+                        const placed = [];
+                        studentsToPlace.forEach((student, idx) => {
+                            const seatId = seats[idx];
+                            if (seatId) {
+                                newSeats[seatId] = seatPayload(student);
+                                placed.push(student);
+                            }
+                        });
+                        return placed;
+                    };
+
+                    const usedSpecialIds = new Set();
+                    const groupedCandidateIds = new Set();
+                    const siblingGroups = [];
+                    remainingStudents.forEach(student => {
+                        if (groupedCandidateIds.has(student.id) || !hasSiblingSeatNeed(student)) return;
+                        const key = buildPlainParentKey(student.parentName, student.parentMobile);
+                        const members = key
+                            ? remainingStudents.filter(s => !groupedCandidateIds.has(s.id) && buildPlainParentKey(s.parentName, s.parentMobile) === key)
+                            : [student];
+                        if (members.length < 2) return;
+                        const sortedMembers = sortStudentsForSeating(members);
+                        sortedMembers.forEach(s => groupedCandidateIds.add(s.id));
+                        siblingGroups.push({
+                            students: sortedMembers,
+                            side: getSiblingGroupSide(sortedMembers),
+                            frontNeed: sortedMembers.some(hasFrontSeatNeed)
+                        });
+                    });
+
+                    let frontNeedCount = 0;
+                    let siblingGroupCount = 0;
+                    siblingGroups.filter(g => g.frontNeed).forEach(group => {
+                        const placed = placeStudents(group.students, group.side, { frontOnly: true });
+                        placed.forEach(s => usedSpecialIds.add(s.id));
+                        frontNeedCount += placed.length;
+                        if (placed.length > 0) siblingGroupCount += 1;
+                    });
+
+                    remainingStudents
+                        .filter(s => !usedSpecialIds.has(s.id) && hasFrontSeatNeed(s))
+                        .forEach(student => {
+                            const placed = placeStudents([student], getPreferredSide(student), { frontOnly: true });
+                            placed.forEach(s => usedSpecialIds.add(s.id));
+                            frontNeedCount += placed.length;
+                        });
+
+                    siblingGroups.filter(g => !g.frontNeed).forEach(group => {
+                        const placed = placeStudents(group.students, group.side);
+                        placed.forEach(s => usedSpecialIds.add(s.id));
+                        if (placed.length > 0) siblingGroupCount += 1;
+                    });
+
+                    const normalStudents = remainingStudents.filter(s => !usedSpecialIds.has(s.id));
+                    let boys = normalStudents.filter(s => s.gender === '男');
+                    let girls = normalStudents.filter(s => s.gender === '女');
+                    availableSeatIds({ side: 'L' }).forEach(id => { if (boys.length) newSeats[id] = seatPayload(boys.shift()); });
+                    availableSeatIds({ side: 'R' }).forEach(id => { if (girls.length) newSeats[id] = seatPayload(girls.shift()); });
+                    const overflowRight = availableSeatIds({ side: 'R' }).reverse();
+                    const overflowLeft = availableSeatIds({ side: 'L' }).reverse();
+                    boys.forEach(b => { if (overflowRight.length) newSeats[overflowRight.shift()] = seatPayload(b); else { const mid = availableSeatIds({ side: 'M' })[0]; if (mid) newSeats[mid] = seatPayload(b); } });
+                    girls.forEach(g => { if (overflowLeft.length) newSeats[overflowLeft.shift()] = seatPayload(g); else { const mid = availableSeatIds({ side: 'M' })[0]; if (mid) newSeats[mid] = seatPayload(g); } });
                     await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: newSeats });
                     const seatedCount = Object.keys(newSeats).length;
-                    ctx.showMessage(`自動排座完成，已保留 ${Object.keys(lockedSeats).length} 個鎖定座位，排入 ${seatedCount} 位學生`);
+                    ctx.showMessage(`自動排座完成，已保留 ${Object.keys(lockedSeats).length} 個鎖定座位，前排需求 ${frontNeedCount} 位，手足群組 ${siblingGroupCount} 組`);
                 });
             };
 
@@ -2630,7 +2882,7 @@
                         </div>
                         <div className="bg-white rounded-xl shadow-md p-5 border border-gray-100">
                             <button onClick={handleAutoAssign} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-md transition">一鍵自動排座</button>
-                            <p className="mt-3 text-xs leading-5 text-gray-500">規則：保留鎖定座位，依車站順序排序，男生優先左側、女生優先右側，盡量減少男女相鄰。</p>
+                            <p className="mt-3 text-xs leading-5 text-gray-500">規則：保留鎖定座位；備註有暈車或前排需求者優先前排；備註有兄弟姐妹坐一起者優先靠近；其餘依車站順序排序，男生優先左側、女生優先右側。</p>
                             <div className="mt-4 border-t pt-4">
                                 <button onClick={handleClearRouteSeating} className="w-full rounded-xl border border-red-200 bg-red-50 py-3 font-bold text-red-600 transition hover:bg-red-100">
                                     <i className="ph-bold ph-eraser mr-1"></i>清空本路線座位
