@@ -1261,11 +1261,7 @@
 
             const updateSystemConfig = async (updates) => {
                 if (!ctx.user) return;
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'main'), {
-                    adminPasswordHash: ctx.appConfig.adminPasswordHash || DEFAULT_PWD_HASH,
-                    rollCallPasswordHash: ctx.appConfig.rollCallPasswordHash || DEFAULT_PWD_HASH,
-                    ...updates
-                }, { merge: true });
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'main'), updates, { merge: true });
             };
 
             const updateSessionFormConfig = async (updates) => {
@@ -2675,7 +2671,7 @@
             const [leaves, setLeaves] = useState([]);
             const [attendanceRecords, setAttendanceRecords] = useState([]);
             const [seatingArrangements, setSeatingArrangements] = useState({});
-            const [appConfig, setAppConfig] = useState({ adminPasswordHash: DEFAULT_PWD_HASH, rollCallPasswordHash: DEFAULT_PWD_HASH, registrationNotice: DEFAULT_REGISTRATION_NOTICE, surveyQuestions: [], surveyQuestionsConfigured: true, surveyTitle: DEFAULT_SURVEY_TITLE, surveyDescription: DEFAULT_SURVEY_DESCRIPTION, surveyNoteLabel: DEFAULT_SURVEY_NOTE_LABEL, surveyNoteEnabled: true, returnOptions: DEFAULT_RETURN_OPTIONS, registrationClosed: false, registrationDeadline: '', rollCallClosed: false, rollCallStartDate: '', rollCallEndDate: '' });
+            const [appConfig, setAppConfig] = useState({ adminPasswordHash: '', rollCallPasswordHash: '', registrationNotice: DEFAULT_REGISTRATION_NOTICE, surveyQuestions: [], surveyQuestionsConfigured: true, surveyTitle: DEFAULT_SURVEY_TITLE, surveyDescription: DEFAULT_SURVEY_DESCRIPTION, surveyNoteLabel: DEFAULT_SURVEY_NOTE_LABEL, surveyNoteEnabled: true, returnOptions: DEFAULT_RETURN_OPTIONS, registrationClosed: false, registrationDeadline: '', rollCallClosed: false, rollCallStartDate: '', rollCallEndDate: '' });
 
             // 1. 初始化 Auth 與全域主控設定 (Master Config)
             useEffect(() => {
@@ -2706,12 +2702,8 @@
                         setMasterConfig(snap.data());
                         setIsMasterReady(true);
                     } else {
-                        const defaultSessionId = `school-bus-${Date.now()}`;
-                        const initialConfig = {
-                            activeSessionId: defaultSessionId,
-                            sessions: [{ id: defaultSessionId, name: '預設常態期程' }]
-                        };
-                        setDoc(masterConfigRef, initialConfig);
+                        setIsMasterReady(false);
+                        setSystemError("主控設定不存在。系統已停止自動建立預設期程，避免覆蓋或切換到錯誤資料。請到 Firebase 檢查 artifacts/changan-master-config/public/data/system/config。");
                     }
                 }, error => {
                     console.error(error);
@@ -2784,8 +2776,8 @@
                 let systemConfigData = {};
                 let sessionFormConfigData = null;
                 const baseAppConfig = {
-                    adminPasswordHash: DEFAULT_PWD_HASH,
-                    rollCallPasswordHash: DEFAULT_PWD_HASH,
+                    adminPasswordHash: '',
+                    rollCallPasswordHash: '',
                     registrationNotice: DEFAULT_REGISTRATION_NOTICE,
                     surveyQuestions: [],
                     surveyQuestionsConfigured: true,
@@ -2812,15 +2804,14 @@
                     if (docSnap.exists()) {
                         const rawSystemConfig = docSnap.data();
                         systemConfigData = {
-                            adminPasswordHash: rawSystemConfig.adminPasswordHash || DEFAULT_PWD_HASH,
-                            rollCallPasswordHash: rawSystemConfig.rollCallPasswordHash || DEFAULT_PWD_HASH
+                            adminPasswordHash: rawSystemConfig.adminPasswordHash || '',
+                            rollCallPasswordHash: rawSystemConfig.rollCallPasswordHash || ''
                         };
                         applyConfig();
                     } else {
-                        setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'main'), {
-                            adminPasswordHash: DEFAULT_PWD_HASH,
-                            rollCallPasswordHash: DEFAULT_PWD_HASH
-                        }, { merge: true });
+                        systemConfigData = {};
+                        applyConfig();
+                        setSystemError("系統密碼設定不存在。系統已停止自動寫入預設密碼，請到 Firebase 檢查 artifacts/changan-schoolbus/public/data/config/main。");
                     }
                 }, console.error);
 
