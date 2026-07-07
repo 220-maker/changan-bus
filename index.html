@@ -50,6 +50,60 @@
             noteEnabled: true,
             noteLabel: DEFAULT_SURVEY_NOTE_LABEL
         }];
+        const CHANGHUA_CITY_VILLAGES = [
+            '阿夷里', '和調里', '竹中里', '三村里', '福山里', '香山里', '福田里', '茄苳里', '古夷里', '石牌里', '竹巷里',
+            '中庄里', '快官里', '田中里', '大竹里', '國聖里', '牛埔里', '茄南里', '寶廍里', '復興里', '安溪里', '台鳳里',
+            '崙平里', '莿桐里', '民權里', '五權里', '西勢里', '南美里', '平和里', '西興里', '忠孝里', '向陽里', '磚磘里',
+            '長樂里', '萬壽里', '忠權里', '南安里', '富貴里', '東芳里', '中央里',
+            '延平里', '建寶里', '光南里', '南瑤里', '華陽里', '永生里', '南興里', '成功里', '延和里', '桃源里', '大同里',
+            '華北里', '介壽里', '彰安里', '東興里', '福安里', '西安里',
+            '新興里', '陽明里', '信義里', '永福里', '光華里', '下廍里', '民生里', '中山里', '興北里', '光復里', '龍山里',
+            '文化里', '中正里', '新華里', '卦山里', '萬安里'
+        ];
+        const PRIORITY_BUS_VILLAGES = ['東芳里', '莿桐里', '磚磘里', '南安里'];
+        const createAddressState = () => ({
+            areaType: 'changhua',
+            village: '',
+            detail: '',
+            otherAddr: ''
+        });
+        const normalizeAddressState = (prefix, source = {}) => ({
+            areaType: source[`${prefix}AreaType`] || (source[`${prefix}Village`] ? 'changhua' : 'changhua'),
+            village: source[`${prefix}Village`] || '',
+            detail: source[`${prefix}Detail`] || '',
+            otherAddr: source[`${prefix}OtherAddr`] || ''
+        });
+        const flattenAddressState = (prefix, address) => ({
+            [`${prefix}AreaType`]: address.areaType,
+            [`${prefix}Village`]: address.areaType === 'changhua' ? address.village : '',
+            [`${prefix}Detail`]: address.areaType === 'changhua' ? address.detail : '',
+            [`${prefix}OtherAddr`]: address.areaType === 'other' ? address.otherAddr : ''
+        });
+        const composeAddressText = (address) => {
+            if (address.areaType === 'changhua') {
+                return ['彰化縣彰化市', address.village, address.detail].filter(Boolean).join('');
+            }
+            return address.otherAddr || '';
+        };
+        const getAddressStateFromStudent = (prefix, student = {}) => {
+            const structured = normalizeAddressState(prefix, student);
+            if (student[`${prefix}AreaType`] || student[`${prefix}Village`] || student[`${prefix}Detail`] || student[`${prefix}OtherAddr`]) {
+                return structured;
+            }
+            const oldAddress = student[prefix === 'residence' ? 'residenceAddr' : 'commAddr'] || '';
+            return oldAddress ? { ...createAddressState(), areaType: 'other', otherAddr: oldAddress } : createAddressState();
+        };
+        const getAddressEligibility = (actualAddress) => {
+            if (actualAddress.areaType !== 'changhua') {
+                return { status: '需人工確認', village: '', isPriorityVillage: false };
+            }
+            const isPriorityVillage = PRIORITY_BUS_VILLAGES.includes(actualAddress.village);
+            return {
+                status: isPriorityVillage ? '符合優先里' : '非優先里',
+                village: actualAddress.village,
+                isPriorityVillage
+            };
+        };
         const getLocalDateString = (date = new Date()) => {
             const y = date.getFullYear();
             const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -380,13 +434,59 @@
             );
         };
 
+        const AddressFields = ({ title, value, onChange, required = false, sameAsResidence = false, onSameAsResidenceChange }) => {
+            const isChanghua = value.areaType !== 'other';
+            return (
+                <div className="sm:col-span-2 rounded-lg border border-gray-100 bg-gray-50 p-3 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="block text-xs font-bold text-gray-600">{title}</label>
+                        {onSameAsResidenceChange && (
+                            <label className="inline-flex items-center gap-2 text-xs font-bold text-indigo-700">
+                                <input type="checkbox" checked={sameAsResidence} onChange={e => onSameAsResidenceChange(e.target.checked)} className="h-4 w-4 accent-indigo-600" />
+                                同戶籍地址
+                            </label>
+                        )}
+                    </div>
+                    {!sameAsResidence && (
+                        <>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                <select value={value.areaType || 'changhua'} onChange={e => onChange({ ...createAddressState(), areaType: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white">
+                                    <option value="changhua">彰化市</option>
+                                    <option value="other">其他縣市／鄉鎮</option>
+                                </select>
+                                {isChanghua && (
+                                    <select required={required} value={value.village || ''} onChange={e => onChange({ ...value, village: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white sm:col-span-2">
+                                        <option value="">請選擇里別</option>
+                                        {CHANGHUA_CITY_VILLAGES.map(village => <option key={village} value={village}>{village}</option>)}
+                                    </select>
+                                )}
+                            </div>
+                            {isChanghua ? (
+                                <input required={required} type="text" placeholder="路、街、巷、弄、號、樓等詳細地址" value={value.detail || ''} onChange={e => onChange({ ...value, detail: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white" />
+                            ) : (
+                                <input required={required} type="text" placeholder="請填寫完整地址" value={value.otherAddr || ''} onChange={e => onChange({ ...value, otherAddr: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white" />
+                            )}
+                        </>
+                    )}
+                </div>
+            );
+        };
+
         const RegisterPage = ({ ctx }) => {
             const [formData, setFormData] = useState({
-                sid: '', class: '', seat: '', name: '', gender: '男', homePhone: '', mobile: '', parentName: '', parentMobile: '', residenceAddr: '', commAddr: '', routeId: '', stopName: '', seatNote: '', returnBus: '', returnNote: '',
+                sid: '', class: '', seat: '', name: '', gender: '男', homePhone: '', mobile: '', parentName: '', parentMobile: '',
+                residenceAddr: '', commAddr: '', residenceAddress: createAddressState(), commSameAsResidence: true, commAddress: createAddressState(),
+                routeId: '', stopName: '', seatNote: '', returnBus: '', returnNote: '',
                 surveyAnswers: {}, surveyNotes: {},
                 noRide: {}
             });
             const [submittedOk, setSubmittedOk] = useState(false);
+            const createEmptyRegisterForm = () => ({
+                sid: '', class: '', seat: '', name: '', gender: '男', homePhone: '', mobile: '', parentName: '', parentMobile: '',
+                residenceAddr: '', commAddr: '', residenceAddress: createAddressState(), commSameAsResidence: true, commAddress: createAddressState(),
+                routeId: ctx.activeRoutes[0]?.id || '', stopName: ctx.activeRoutes[0]?.stops[0] || '', seatNote: '', returnBus: '', returnNote: '',
+                surveyAnswers: {}, surveyNotes: {}, noRide: {}
+            });
 
             useEffect(() => {
                 if (!formData.routeId && ctx.activeRoutes.length > 0) {
@@ -444,6 +544,11 @@
                     if (q.noteEnabled) surveyNotes[q.id] = formData.surveyNotes[q.id] || '';
                 });
                 const firstQuestion = surveyQuestions[0];
+                const residenceAddress = formData.residenceAddress || createAddressState();
+                const commAddress = formData.commSameAsResidence ? residenceAddress : (formData.commAddress || createAddressState());
+                const residenceAddr = composeAddressText(residenceAddress);
+                const commAddr = formData.commSameAsResidence ? residenceAddr : composeAddressText(commAddress);
+                const addressEligibility = getAddressEligibility(commAddress);
                 const originalCreatedAt = existingStudent?.createdAt || Number(existingStudent?.id) || now;
                 const publicData = {
                     id: targetId,
@@ -461,17 +566,38 @@
                     returnNote: firstQuestion ? (surveyNotes[firstQuestion.id] || '') : '',
                     noRide: formData.noRide,
                     lookupKey,
+                    residenceVillage: residenceAddress.areaType === 'changhua' ? residenceAddress.village : '',
+                    actualVillage: addressEligibility.village,
+                    busEligibilityStatus: addressEligibility.status,
+                    isPriorityBusVillage: addressEligibility.isPriorityVillage,
                     createdAt: originalCreatedAt,
                     submittedAt: now,
                     updatedAt: now
                 };
-                const privateData = { id: targetId, dedupeKey, sid: formData.sid, homePhone: formData.homePhone, mobile: formData.mobile, parentName: formData.parentName, parentMobile: formData.parentMobile, residenceAddr: formData.residenceAddr, commAddr: formData.commAddr, updatedAt: now };
+                const privateData = {
+                    id: targetId,
+                    dedupeKey,
+                    sid: formData.sid,
+                    homePhone: formData.homePhone,
+                    mobile: formData.mobile,
+                    parentName: formData.parentName,
+                    parentMobile: formData.parentMobile,
+                    residenceAddr,
+                    commAddr,
+                    ...flattenAddressState('residence', residenceAddress),
+                    commSameAsResidence: formData.commSameAsResidence,
+                    ...flattenAddressState('comm', commAddress),
+                    actualVillage: addressEligibility.village,
+                    busEligibilityStatus: addressEligibility.status,
+                    isPriorityBusVillage: addressEligibility.isPriorityVillage,
+                    updatedAt: now
+                };
                 try {
                     await setDoc(ctx.getDocRef('students_public', targetId), publicData, { merge: true });
                     await setDoc(ctx.getDocRef('students_private', targetId), privateData, { merge: true });
                     ctx.showMessage(existingId ? '已更新原本的報名資料' : '報名成功！資料已送出');
                     setSubmittedOk(true);
-                    setFormData({ sid: '', class: '', seat: '', name: '', gender: '男', homePhone: '', mobile: '', parentName: '', parentMobile: '', residenceAddr: '', commAddr: '', routeId: ctx.activeRoutes[0]?.id || '', stopName: ctx.activeRoutes[0]?.stops[0] || '', seatNote: '', returnBus: '', returnNote: '', surveyAnswers: {}, surveyNotes: {}, noRide: {} });
+                    setFormData(createEmptyRegisterForm());
                 } catch(err) { ctx.showMessage('連線錯誤', 'error'); }
             };
 
@@ -540,8 +666,20 @@
                                         <div><label className="block text-xs text-gray-500 mb-1">監護人手機</label><input required type="text" value={formData.parentMobile} onChange={e => setFormData({...formData, parentMobile: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                         <div><label className="block text-xs text-gray-500 mb-1">學生本人手機 (選填)</label><input type="text" value={formData.mobile} onChange={e => setFormData({...formData, mobile: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                         <div><label className="block text-xs text-gray-500 mb-1">住家室內電話 (選填)</label><input type="text" value={formData.homePhone} onChange={e => setFormData({...formData, homePhone: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
-                                        <div className="sm:col-span-2"><label className="block text-xs text-gray-500 mb-1">戶籍地址</label><input required type="text" value={formData.residenceAddr} onChange={e => setFormData({...formData, residenceAddr: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
-                                        <div className="sm:col-span-2"><label className="block text-xs text-gray-500 mb-1">通訊地址 (選填，若同戶籍免填)</label><input type="text" value={formData.commAddr} onChange={e => setFormData({...formData, commAddr: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
+                                        <AddressFields
+                                            title="戶籍地址"
+                                            value={formData.residenceAddress}
+                                            required={true}
+                                            onChange={residenceAddress => setFormData({...formData, residenceAddress})}
+                                        />
+                                        <AddressFields
+                                            title="通訊／實際居住地址"
+                                            value={formData.commAddress}
+                                            sameAsResidence={formData.commSameAsResidence}
+                                            onSameAsResidenceChange={commSameAsResidence => setFormData({...formData, commSameAsResidence})}
+                                            required={!formData.commSameAsResidence}
+                                            onChange={commAddress => setFormData({...formData, commAddress})}
+                                        />
                                     </div>
                                 </div>
                                 <div className="space-y-4 md:col-span-2 pt-4 border-t border-gray-100">
@@ -1258,6 +1396,9 @@
             const [editLeaveModalOpen, setEditLeaveModalOpen] = useState(false);
             const [editLeaveFormData, setEditLeaveFormData] = useState({});
             const [adminTab, setAdminTab] = useState('dashboard');
+            const [restoreFile, setRestoreFile] = useState(null);
+            const [restoreBusy, setRestoreBusy] = useState(false);
+            const [restoreInputKey, setRestoreInputKey] = useState(0);
             const editDays = [{ val: 1, label: '週一' }, { val: 2, label: '週二' }, { val: 3, label: '週三' }, { val: 4, label: '週四' }, { val: 5, label: '週五' }];
             const editShifts = [{ key: 'morning', label: '上學' }, { key: 'afternoon', label: '放學' }];
 
@@ -1755,7 +1896,133 @@
                 }
             };
 
-            const openEditModal = (student) => { setEditFormData({ ...student, noRide: student.noRide || {} }); setEditModalOpen(true); };
+            const readJsonBackupFile = (file) => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    try {
+                        resolve(JSON.parse(reader.result));
+                    } catch (err) {
+                        reject(new Error('JSON 格式無法讀取'));
+                    }
+                };
+                reader.onerror = () => reject(new Error('檔案讀取失敗'));
+                reader.readAsText(file, 'utf-8');
+            });
+
+            const getBackupCollectionDocs = (backup, colName) => {
+                const docs = backup?.collections?.[colName];
+                return Array.isArray(docs) ? docs.filter(d => d && d.id && d.data && typeof d.data === 'object') : [];
+            };
+
+            const handleRestoreFullBackup = async () => {
+                if (!ctx.user || !ctx.masterConfig?.activeSessionId) {
+                    ctx.showMessage('目前沒有可還原的期程', 'error');
+                    return;
+                }
+                if (!restoreFile) {
+                    ctx.showMessage('請先選擇 JSON 備份檔', 'error');
+                    return;
+                }
+
+                let backup;
+                try {
+                    backup = await readJsonBackupFile(restoreFile);
+                } catch (err) {
+                    ctx.showMessage(err.message || 'JSON 備份檔讀取失敗', 'error');
+                    return;
+                }
+
+                if (!backup?.collections || !backup?.session?.id) {
+                    ctx.showMessage('這不是有效的校車完整備份 JSON', 'error');
+                    return;
+                }
+                if (backup.appId && backup.appId !== appId) {
+                    ctx.showMessage(`備份檔 appId 是 ${backup.appId}，不是目前系統 ${appId}`, 'error');
+                    return;
+                }
+
+                const targetSessionId = ctx.masterConfig.activeSessionId;
+                const backupSessionName = backup.session?.name || '未命名期程';
+                const restoreCollections = ['students_public', 'students_private', 'routes', 'leaves', 'attendanceRecords', 'seatingArrangements'];
+                const counts = restoreCollections.reduce((acc, colName) => {
+                    acc[colName] = getBackupCollectionDocs(backup, colName).length;
+                    return acc;
+                }, {});
+                const confirmMsg = [
+                    `確定要用「${restoreFile.name}」還原到目前期程「${currentSessionName}」嗎？`,
+                    `備份來源期程：${backupSessionName} (${backup.session.id})`,
+                    `將先清空目前期程資料，再寫回：學生 ${counts.students_public}/${counts.students_private} 筆、路線 ${counts.routes} 筆、座位 ${counts.seatingArrangements} 筆、點名 ${counts.attendanceRecords} 筆、請假 ${counts.leaves} 筆。`,
+                    '這個動作會覆蓋目前期程資料，請確認已先下載最新 JSON 備份。'
+                ].join('\n');
+
+                ctx.showConfirm(confirmMsg, async () => {
+                    setRestoreBusy(true);
+                    try {
+                        ctx.showMessage('正在還原完整備份，請勿關閉視窗...');
+                        await deleteSessionData(targetSessionId);
+
+                        const writes = [];
+                        restoreCollections.forEach(colName => {
+                            getBackupCollectionDocs(backup, colName).forEach(item => {
+                                const targetDocId = `${targetSessionId}_${item.id}`;
+                                writes.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', colName, targetDocId), {
+                                    ...item.data,
+                                    id: item.id,
+                                    sessionId: targetSessionId
+                                }));
+                            });
+                        });
+
+                        getBackupCollectionDocs(backup, 'config').forEach(item => {
+                            const isSystemMain = item.fullDocId === 'main';
+                            const targetDocId = isSystemMain ? 'main' : `${targetSessionId}_${item.id}`;
+                            writes.push(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', targetDocId), item.data));
+                        });
+
+                        await Promise.all(writes);
+                        const cleanupWrites = [];
+                        for (const colName of restoreCollections) {
+                            const restoredDocIds = new Set(getBackupCollectionDocs(backup, colName).map(item => `${targetSessionId}_${item.id}`));
+                            const snap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', colName));
+                            snap.docs.forEach(d => {
+                                if (d.id.startsWith(`${targetSessionId}_`) && !restoredDocIds.has(d.id)) {
+                                    cleanupWrites.push(deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', colName, d.id)));
+                                }
+                            });
+                        }
+                        await Promise.all(cleanupWrites);
+                        const sessions = ctx.masterConfig?.sessions || [];
+                        const updatedSessions = sessions.some(s => s.id === targetSessionId)
+                            ? sessions.map(s => s.id === targetSessionId ? { ...s, name: s.name || backupSessionName } : s)
+                            : [...sessions, { id: targetSessionId, name: backupSessionName }];
+                        await setDoc(doc(db, 'artifacts', 'changan-master-config', 'public', 'data', 'system', 'config'), {
+                            ...ctx.masterConfig,
+                            activeSessionId: targetSessionId,
+                            sessions: updatedSessions
+                        });
+
+                        setRestoreFile(null);
+                        setRestoreInputKey(prev => prev + 1);
+                        ctx.showMessage(`完整備份已還原到「${currentSessionName}」`);
+                    } catch (err) {
+                        console.error(err);
+                        ctx.showMessage('完整備份還原失敗，請檢查網路連線或 Firebase 權限', 'error');
+                    } finally {
+                        setRestoreBusy(false);
+                    }
+                });
+            };
+
+            const openEditModal = (student) => {
+                setEditFormData({
+                    ...student,
+                    noRide: student.noRide || {},
+                    residenceAddress: getAddressStateFromStudent('residence', student),
+                    commSameAsResidence: student.commSameAsResidence === true || (!student.commAddr && !student.commVillage && !student.commDetail && !student.commOtherAddr),
+                    commAddress: getAddressStateFromStudent('comm', student)
+                });
+                setEditModalOpen(true);
+            };
             const toggleEditNoRide = (day, shift) => {
                 const key = `${day}-${shift}`;
                 setEditFormData(prev => ({
@@ -1770,7 +2037,7 @@
             const handleEditSubmit = async (e) => {
                 e.preventDefault();
                 if (!ctx.user) return;
-                const { id, class: cls, seat, name, gender, routeId, stopName, seatNote, sid, homePhone, mobile, parentName, parentMobile, residenceAddr, commAddr } = editFormData;
+                const { id, class: cls, seat, name, gender, routeId, stopName, seatNote, sid, homePhone, mobile, parentName, parentMobile } = editFormData;
                 const surveyQuestions = buildSurveyQuestions(ctx.appConfig);
                 const surveyAnswers = editFormData.surveyAnswers || {};
                 const surveyNotes = editFormData.surveyNotes || {};
@@ -1778,6 +2045,12 @@
                 const now = Date.now();
                 const lookupKey = await buildLookupKey(parentName, parentMobile);
                 const dedupeKey = createStudentDedupeKey({ sid, class: cls, seat, name, parentName, parentMobile, lookupKey });
+                const residenceAddress = editFormData.residenceAddress || getAddressStateFromStudent('residence', editFormData);
+                const commSameAsResidence = editFormData.commSameAsResidence === true;
+                const commAddress = commSameAsResidence ? residenceAddress : (editFormData.commAddress || getAddressStateFromStudent('comm', editFormData));
+                const residenceAddr = composeAddressText(residenceAddress);
+                const commAddr = commSameAsResidence ? residenceAddr : composeAddressText(commAddress);
+                const addressEligibility = getAddressEligibility(commAddress);
                 const publicData = {
                     dedupeKey,
                     lookupKey,
@@ -1793,9 +2066,29 @@
                     returnBus: firstQuestion ? (surveyAnswers[firstQuestion.id] || '') : '',
                     returnNote: firstQuestion ? (surveyNotes[firstQuestion.id] || '') : '',
                     noRide: editFormData.noRide || {},
+                    residenceVillage: residenceAddress.areaType === 'changhua' ? residenceAddress.village : '',
+                    actualVillage: addressEligibility.village,
+                    busEligibilityStatus: addressEligibility.status,
+                    isPriorityBusVillage: addressEligibility.isPriorityVillage,
                     updatedAt: now
                 };
-                const privateData = { dedupeKey, sid, homePhone, mobile, parentName, parentMobile, residenceAddr, commAddr, updatedAt: now };
+                const privateData = {
+                    dedupeKey,
+                    sid,
+                    homePhone,
+                    mobile,
+                    parentName,
+                    parentMobile,
+                    residenceAddr,
+                    commAddr,
+                    ...flattenAddressState('residence', residenceAddress),
+                    commSameAsResidence,
+                    ...flattenAddressState('comm', commAddress),
+                    actualVillage: addressEligibility.village,
+                    busEligibilityStatus: addressEligibility.status,
+                    isPriorityBusVillage: addressEligibility.isPriorityVillage,
+                    updatedAt: now
+                };
                 try {
                     await setDoc(ctx.getDocRef('students_public', id), publicData, { merge: true });
                     await setDoc(ctx.getDocRef('students_private', id), privateData, { merge: true });
@@ -1808,7 +2101,7 @@
                 const BOM = '\uFEFF';
                 const surveyQuestions = buildSurveyQuestions(ctx.appConfig);
                 const surveyHeaders = surveyQuestions.flatMap(q => [q.title, `${q.title}備註`]);
-                const headers = ["學號","班級","座號","姓名","性別","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","通訊地址"];
+                const headers = ["學號","班級","座號","姓名","性別","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","戶籍里","通訊／實際居住地址","實際居住里","校車里別資格"];
                 const escapeCsv = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
                 const buildStudentRow = (s) => {
                     const routeName = ctx.routes.find(r => r.id === s.routeId)?.name || '';
@@ -1818,7 +2111,7 @@
                         const note = s.surveyNotes?.[q.id] || (idx === 0 ? (s.returnNote || '') : '');
                         return [answer, note];
                     });
-                    return [s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.commAddr || ''];
+                    return [s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.residenceVillage || '', s.commAddr || '', s.actualVillage || '', s.busEligibilityStatus || ''];
                 };
                 const sortForRoute = (list, route) => {
                     const stopOrder = route?.stops || [];
@@ -2338,7 +2631,8 @@
                                                 {s.mobile && <div className="text-gray-600 mt-0.5">學生手機: {s.mobile}</div>}
                                                 {s.homePhone && <div className="text-gray-600 mt-0.5">室內電話: {s.homePhone}</div>}
                                                 <div className="text-gray-500 mt-1 truncate max-w-xs" title={s.residenceAddr}>戶籍: {s.residenceAddr}</div>
-                                                {s.commAddr && <div className="text-gray-500 truncate max-w-xs" title={s.commAddr}>通訊: {s.commAddr}</div>}
+                                                {s.commAddr && <div className="text-gray-500 truncate max-w-xs" title={s.commAddr}>通訊／居住: {s.commAddr}</div>}
+                                                {s.busEligibilityStatus && <div className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${s.isPriorityBusVillage ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{s.busEligibilityStatus}{s.actualVillage ? `：${s.actualVillage}` : ''}</div>}
                                             </td>
                                             <td className="px-4 py-3 text-center align-middle">
                                                 <div className="flex justify-center space-x-2">
@@ -2389,19 +2683,32 @@
                         <div className="bg-emerald-50 p-4 border-b border-emerald-100 font-bold text-emerald-800 flex items-center">
                             <i className="ph-fill ph-floppy-disk text-xl mr-2 text-emerald-600"></i> 完整資料備份
                         </div>
-                        <div className="p-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-                            <div className="space-y-2">
-                                <h4 className="font-bold text-gray-800">下載目前期程的完整備份</h4>
-                                <p className="text-sm text-gray-600">
-                                    目前期程：<span className="font-bold text-emerald-700">{currentSessionName}</span>
-                                    <span className="ml-2 text-gray-400">({ctx.masterConfig?.activeSessionId || '尚未取得期程 ID'})</span>
-                                </p>
-                                <p className="text-sm text-gray-500">備份會包含學生資料、路線、請假、點名、座位與系統設定；按下後只會下載檔案，不會修改 Firebase 資料。</p>
-                                <p className="text-xs font-bold text-emerald-700">建議放置：學校事務 / 交通車備份 / {safeFileName(currentSessionName)}</p>
+                        <div className="p-6 space-y-5">
+                            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                                <div className="space-y-2">
+                                    <h4 className="font-bold text-gray-800">下載目前期程的完整備份</h4>
+                                    <p className="text-sm text-gray-600">
+                                        目前期程：<span className="font-bold text-emerald-700">{currentSessionName}</span>
+                                        <span className="ml-2 text-gray-400">({ctx.masterConfig?.activeSessionId || '尚未取得期程 ID'})</span>
+                                    </p>
+                                    <p className="text-sm text-gray-500">備份會包含學生資料、路線、請假、點名、座位與系統設定；按下後只會下載檔案，不會修改 Firebase 資料。</p>
+                                    <p className="text-xs font-bold text-emerald-700">建議放置：學校事務 / 交通車備份 / {safeFileName(currentSessionName)}</p>
+                                </div>
+                                <button onClick={handleDownloadFullBackup} className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition shadow-md whitespace-nowrap flex items-center justify-center">
+                                    <i className="ph-bold ph-download-simple mr-2"></i> 下載完整備份 JSON
+                                </button>
                             </div>
-                            <button onClick={handleDownloadFullBackup} className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition shadow-md whitespace-nowrap flex items-center justify-center">
-                                <i className="ph-bold ph-download-simple mr-2"></i> 下載完整備份 JSON
-                            </button>
+                            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                                <div className="space-y-2">
+                                    <h4 className="font-bold text-amber-900">從 JSON 還原完整資料</h4>
+                                    <p className="text-sm text-amber-800">會還原到目前期程；執行時會先清空目前期程的學生、路線、座位、點名、請假與期程設定，再寫入備份內容。</p>
+                                    <input key={restoreInputKey} type="file" accept=".json,application/json" onChange={e => setRestoreFile(e.target.files?.[0] || null)} className="block w-full text-sm text-gray-700 file:mr-3 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:font-bold file:text-amber-800" />
+                                    {restoreFile && <p className="text-xs font-bold text-amber-800">已選擇：{restoreFile.name}</p>}
+                                </div>
+                                <button type="button" onClick={handleRestoreFullBackup} disabled={!restoreFile || restoreBusy} className="px-6 py-3 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg transition shadow-md whitespace-nowrap flex items-center justify-center disabled:cursor-not-allowed disabled:bg-gray-300">
+                                    <i className="ph-bold ph-upload-simple mr-2"></i>{restoreBusy ? '還原中...' : '還原完整備份'}
+                                </button>
+                            </div>
                         </div>
                     </div>
 
@@ -2551,8 +2858,20 @@
 
                                         <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
                                             <h4 className="flex items-center text-sm font-bold text-gray-800"><i className="ph-fill ph-map-pin mr-2 text-lg text-indigo-600"></i>地址資料</h4>
-                                            <div><label className="block text-xs text-gray-500 mb-1">戶籍地址</label><input required type="text" value={editFormData.residenceAddr || ''} onChange={e => setEditFormData({...editFormData, residenceAddr: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white" /></div>
-                                            <div><label className="block text-xs text-gray-500 mb-1">通訊地址</label><input type="text" value={editFormData.commAddr || ''} onChange={e => setEditFormData({...editFormData, commAddr: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white" /></div>
+                                            <AddressFields
+                                                title="戶籍地址"
+                                                value={editFormData.residenceAddress || createAddressState()}
+                                                required={true}
+                                                onChange={residenceAddress => setEditFormData({...editFormData, residenceAddress})}
+                                            />
+                                            <AddressFields
+                                                title="通訊／實際居住地址"
+                                                value={editFormData.commAddress || createAddressState()}
+                                                sameAsResidence={editFormData.commSameAsResidence === true}
+                                                onSameAsResidenceChange={commSameAsResidence => setEditFormData({...editFormData, commSameAsResidence})}
+                                                required={editFormData.commSameAsResidence !== true}
+                                                onChange={commAddress => setEditFormData({...editFormData, commAddress})}
+                                            />
                                         </div>
                                     </form>
                                 </div>
