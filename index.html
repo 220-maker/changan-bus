@@ -51,15 +51,18 @@
             noteLabel: DEFAULT_SURVEY_NOTE_LABEL
         }];
         const CHANGHUA_CITY_VILLAGES = [
-            '阿夷里', '和調里', '竹中里', '三村里', '福山里', '香山里', '福田里', '茄苳里', '古夷里', '石牌里', '竹巷里',
-            '中庄里', '快官里', '田中里', '大竹里', '國聖里', '牛埔里', '茄南里', '寶廍里', '復興里', '安溪里', '台鳳里',
-            '崙平里', '莿桐里', '民權里', '五權里', '西勢里', '南美里', '平和里', '西興里', '忠孝里', '向陽里', '磚磘里',
-            '長樂里', '萬壽里', '忠權里', '南安里', '富貴里', '東芳里', '中央里',
-            '延平里', '建寶里', '光南里', '南瑤里', '華陽里', '永生里', '南興里', '成功里', '延和里', '桃源里', '大同里',
-            '華北里', '介壽里', '彰安里', '東興里', '福安里', '西安里',
-            '新興里', '陽明里', '信義里', '永福里', '光華里', '下廍里', '民生里', '中山里', '興北里', '光復里', '龍山里',
-            '文化里', '中正里', '新華里', '卦山里', '萬安里'
+            '磚磘里', '東芳里', '南安里', '莿桐里',
+            '萬壽里', '民權里', '富貴里', '永生里',
+            '西安里', '成功里', '彰安里', '福安里',
+            '崙平里', '平和里', '西興里', '南瑤里', '西勢里'
         ];
+        const SCHOOL_DISTRICT_VILLAGE_NOTES = {
+            '萬壽里': '學區範圍：1至7鄰，請在詳細地址填寫鄰別。',
+            '民權里': '學區範圍：7鄰以後，請在詳細地址填寫鄰別。',
+            '富貴里': '學區範圍：1至10鄰，請在詳細地址填寫鄰別。',
+            '永生里': '學區範圍：1至7鄰、15至20鄰，請在詳細地址填寫鄰別。',
+            '西興里': '學區範圍：1至16鄰，請在詳細地址填寫鄰別。'
+        };
         const PRIORITY_BUS_VILLAGES = ['東芳里', '莿桐里', '磚磘里', '南安里'];
         const createAddressState = () => ({
             areaType: 'changhua',
@@ -99,7 +102,7 @@
             }
             const isPriorityVillage = PRIORITY_BUS_VILLAGES.includes(actualAddress.village);
             return {
-                status: isPriorityVillage ? '符合優先里' : '非優先里',
+                status: isPriorityVillage ? '戶籍優先里' : '戶籍非優先里',
                 village: actualAddress.village,
                 isPriorityVillage
             };
@@ -456,13 +459,16 @@
                                 </select>
                                 {isChanghua && (
                                     <select required={required} value={value.village || ''} onChange={e => onChange({ ...value, village: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white sm:col-span-2">
-                                        <option value="">請選擇里別</option>
+                                        <option value="">請選擇學區里別</option>
                                         {CHANGHUA_CITY_VILLAGES.map(village => <option key={village} value={village}>{village}</option>)}
                                     </select>
                                 )}
                             </div>
                             {isChanghua ? (
-                                <input required={required} type="text" placeholder="路、街、巷、弄、號、樓等詳細地址" value={value.detail || ''} onChange={e => onChange({ ...value, detail: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white" />
+                                <>
+                                    {SCHOOL_DISTRICT_VILLAGE_NOTES[value.village] && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-700">{SCHOOL_DISTRICT_VILLAGE_NOTES[value.village]}</p>}
+                                    <input required={required} type="text" placeholder="請填鄰、路、街、巷、弄、號、樓等詳細地址" value={value.detail || ''} onChange={e => onChange({ ...value, detail: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white" />
+                                </>
                             ) : (
                                 <input required={required} type="text" placeholder="請填寫完整地址" value={value.otherAddr || ''} onChange={e => onChange({ ...value, otherAddr: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white" />
                             )}
@@ -548,7 +554,8 @@
                 const commAddress = formData.commSameAsResidence ? residenceAddress : (formData.commAddress || createAddressState());
                 const residenceAddr = composeAddressText(residenceAddress);
                 const commAddr = formData.commSameAsResidence ? residenceAddr : composeAddressText(commAddress);
-                const addressEligibility = getAddressEligibility(commAddress);
+                const residenceEligibility = getAddressEligibility(residenceAddress);
+                const actualEligibility = getAddressEligibility(commAddress);
                 const originalCreatedAt = existingStudent?.createdAt || Number(existingStudent?.id) || now;
                 const publicData = {
                     id: targetId,
@@ -567,9 +574,10 @@
                     noRide: formData.noRide,
                     lookupKey,
                     residenceVillage: residenceAddress.areaType === 'changhua' ? residenceAddress.village : '',
-                    actualVillage: addressEligibility.village,
-                    busEligibilityStatus: addressEligibility.status,
-                    isPriorityBusVillage: addressEligibility.isPriorityVillage,
+                    actualVillage: actualEligibility.village,
+                    actualEligibilityStatus: actualEligibility.status,
+                    busEligibilityStatus: residenceEligibility.status,
+                    isPriorityBusVillage: residenceEligibility.isPriorityVillage,
                     createdAt: originalCreatedAt,
                     submittedAt: now,
                     updatedAt: now
@@ -587,9 +595,10 @@
                     ...flattenAddressState('residence', residenceAddress),
                     commSameAsResidence: formData.commSameAsResidence,
                     ...flattenAddressState('comm', commAddress),
-                    actualVillage: addressEligibility.village,
-                    busEligibilityStatus: addressEligibility.status,
-                    isPriorityBusVillage: addressEligibility.isPriorityVillage,
+                    actualVillage: actualEligibility.village,
+                    actualEligibilityStatus: actualEligibility.status,
+                    busEligibilityStatus: residenceEligibility.status,
+                    isPriorityBusVillage: residenceEligibility.isPriorityVillage,
                     updatedAt: now
                 };
                 try {
@@ -2050,7 +2059,8 @@
                 const commAddress = commSameAsResidence ? residenceAddress : (editFormData.commAddress || getAddressStateFromStudent('comm', editFormData));
                 const residenceAddr = composeAddressText(residenceAddress);
                 const commAddr = commSameAsResidence ? residenceAddr : composeAddressText(commAddress);
-                const addressEligibility = getAddressEligibility(commAddress);
+                const residenceEligibility = getAddressEligibility(residenceAddress);
+                const actualEligibility = getAddressEligibility(commAddress);
                 const publicData = {
                     dedupeKey,
                     lookupKey,
@@ -2067,9 +2077,10 @@
                     returnNote: firstQuestion ? (surveyNotes[firstQuestion.id] || '') : '',
                     noRide: editFormData.noRide || {},
                     residenceVillage: residenceAddress.areaType === 'changhua' ? residenceAddress.village : '',
-                    actualVillage: addressEligibility.village,
-                    busEligibilityStatus: addressEligibility.status,
-                    isPriorityBusVillage: addressEligibility.isPriorityVillage,
+                    actualVillage: actualEligibility.village,
+                    actualEligibilityStatus: actualEligibility.status,
+                    busEligibilityStatus: residenceEligibility.status,
+                    isPriorityBusVillage: residenceEligibility.isPriorityVillage,
                     updatedAt: now
                 };
                 const privateData = {
@@ -2084,9 +2095,10 @@
                     ...flattenAddressState('residence', residenceAddress),
                     commSameAsResidence,
                     ...flattenAddressState('comm', commAddress),
-                    actualVillage: addressEligibility.village,
-                    busEligibilityStatus: addressEligibility.status,
-                    isPriorityBusVillage: addressEligibility.isPriorityVillage,
+                    actualVillage: actualEligibility.village,
+                    actualEligibilityStatus: actualEligibility.status,
+                    busEligibilityStatus: residenceEligibility.status,
+                    isPriorityBusVillage: residenceEligibility.isPriorityVillage,
                     updatedAt: now
                 };
                 try {
@@ -2101,7 +2113,7 @@
                 const BOM = '\uFEFF';
                 const surveyQuestions = buildSurveyQuestions(ctx.appConfig);
                 const surveyHeaders = surveyQuestions.flatMap(q => [q.title, `${q.title}備註`]);
-                const headers = ["學號","班級","座號","姓名","性別","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","戶籍里","通訊／實際居住地址","實際居住里","校車里別資格"];
+                const headers = ["學號","班級","座號","姓名","性別","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","戶籍里","戶籍校車資格","通訊／實際居住地址","實際居住里","實際居住資格"];
                 const escapeCsv = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
                 const buildStudentRow = (s) => {
                     const routeName = ctx.routes.find(r => r.id === s.routeId)?.name || '';
@@ -2111,7 +2123,7 @@
                         const note = s.surveyNotes?.[q.id] || (idx === 0 ? (s.returnNote || '') : '');
                         return [answer, note];
                     });
-                    return [s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.residenceVillage || '', s.commAddr || '', s.actualVillage || '', s.busEligibilityStatus || ''];
+                    return [s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.residenceVillage || '', s.busEligibilityStatus || '', s.commAddr || '', s.actualVillage || '', s.actualEligibilityStatus || ''];
                 };
                 const sortForRoute = (list, route) => {
                     const stopOrder = route?.stops || [];
@@ -2632,7 +2644,7 @@
                                                 {s.homePhone && <div className="text-gray-600 mt-0.5">室內電話: {s.homePhone}</div>}
                                                 <div className="text-gray-500 mt-1 truncate max-w-xs" title={s.residenceAddr}>戶籍: {s.residenceAddr}</div>
                                                 {s.commAddr && <div className="text-gray-500 truncate max-w-xs" title={s.commAddr}>通訊／居住: {s.commAddr}</div>}
-                                                {s.busEligibilityStatus && <div className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${s.isPriorityBusVillage ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{s.busEligibilityStatus}{s.actualVillage ? `：${s.actualVillage}` : ''}</div>}
+                                                {s.busEligibilityStatus && <div className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${s.isPriorityBusVillage ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{s.busEligibilityStatus}{s.residenceVillage ? `：${s.residenceVillage}` : ''}</div>}
                                             </td>
                                             <td className="px-4 py-3 text-center align-middle">
                                                 <div className="flex justify-center space-x-2">
@@ -2888,6 +2900,7 @@
 
         const SeatingPage = ({ ctx }) => {
             const [routeId, setRouteId] = useState('');
+            const [studentPoolRouteId, setStudentPoolRouteId] = useState('all');
             const [selectedSeat, setSelectedSeat] = useState(null);
             const [activeColor, setActiveColor] = useState(null);
             const [privacyMode, setPrivacyMode] = useState(false);
@@ -2900,10 +2913,13 @@
 
             const currentSeating = ctx.seatingArrangements[routeId]?.seats || {};
             const routeStudents = ctx.students.filter(s => s.routeId === routeId);
-            const assignedStudentIds = Object.values(currentSeating).map(s => s.studentId);
-            const unassignedStudents = routeStudents.filter(s => !assignedStudentIds.includes(s.id));
+            const assignedStudentIds = Object.values(ctx.seatingArrangements || {}).flatMap(arr => Object.values(arr?.seats || {}).map(s => s.studentId));
+            const assignedStudentIdSet = new Set(assignedStudentIds);
             const currentRoute = ctx.activeRoutes.find(r => r.id === routeId);
+            const currentSessionName = ctx.masterConfig?.sessions?.find(s => s.id === ctx.masterConfig?.activeSessionId)?.name || ctx.masterConfig?.activeSessionId || '目前期程';
             const stopOrder = currentRoute?.stops || [];
+            const getRouteName = (id) => ctx.routes.find(r => r.id === id)?.name || ctx.activeRoutes.find(r => r.id === id)?.name || '未設定路線';
+            const isCrossRouteStudent = (student) => student && student.routeId && student.routeId !== routeId;
             const maskStudentName = (name) => {
                 const clean = String(name || '').trim();
                 if (!clean) return '';
@@ -2919,6 +2935,14 @@
                 if (classDiff !== 0) return classDiff;
                 return (parseInt(a.seat) || 999) - (parseInt(b.seat) || 999);
             });
+            const studentPoolRoutes = [{ id: 'all', name: '全部路線未排（跨線用）' }, { id: 'current', name: '本車路線未排' }, ...ctx.activeRoutes.map(r => ({ id: r.id, name: `${r.name}未排` }))];
+            const getPoolStudents = () => {
+                const base = studentPoolRouteId === 'all'
+                    ? ctx.students
+                    : ctx.students.filter(s => s.routeId === (studentPoolRouteId === 'current' ? routeId : studentPoolRouteId));
+                return base.filter(s => !assignedStudentIdSet.has(s.id));
+            };
+            const unassignedStudents = sortStudentsForSeating(getPoolStudents());
             const normalizeSeatNote = (student) => String(student?.seatNote || '').replace(/\s+/g, '');
             const hasFrontSeatNeed = (student) => /暈車|晕车|容易暈|容易晕|會暈|会晕|前排|坐前|前面|車頭|车头/.test(normalizeSeatNote(student));
             const hasSiblingSeatNeed = (student) => /兄弟|姊妹|姐妹|兄妹|姐弟|姊弟|手足|坐一起|一起坐|坐附近|坐旁邊|坐旁边/.test(normalizeSeatNote(student));
@@ -2934,20 +2958,23 @@
             };
             const seatPayload = (student, existing = {}) => ({
                 studentId: student.id,
+                originalRouteId: student.routeId || '',
+                originalStopName: student.stopName || '',
+                assignedVehicleRouteId: routeId,
                 color: existing.color || getGenderSeatColor(student.gender),
                 locked: existing.locked || false
             });
 
             const handleAutoAssign = () => {
                 if (!routeId) return;
-                ctx.showConfirm('自動排座會重排未鎖定座位，已鎖定座位會保留。確定繼續？', async () => {
-                    const lockedSeats = {};
+                ctx.showConfirm('自動排座會保留目前已安排座位，只排還沒入座的本路線學生。確定繼續？', async () => {
+                    const reservedSeats = {};
                     Object.entries(currentSeating).forEach(([seatId, data]) => {
-                        if (data.locked) lockedSeats[seatId] = data;
+                        reservedSeats[seatId] = data;
                     });
-                    const lockedStudentIds = Object.values(lockedSeats).map(s => s.studentId);
-                    const remainingStudents = sortStudentsForSeating(routeStudents.filter(s => !lockedStudentIds.includes(s.id)));
-                    const newSeats = { ...lockedSeats };
+                    const reservedStudentIds = new Set(Object.values(reservedSeats).map(s => s.studentId));
+                    const remainingStudents = sortStudentsForSeating(routeStudents.filter(s => !assignedStudentIdSet.has(s.id) && !reservedStudentIds.has(s.id)));
+                    const newSeats = { ...reservedSeats };
                     const seatItems = SHARED_SEAT_LAYOUT.filter(s => s.type === 'seat');
                     const seatOrder = (a, b) => seatItems.findIndex(s => s.id === a) - seatItems.findIndex(s => s.id === b);
                     const availableSeatIds = ({ side, frontOnly = false } = {}) => seatItems
@@ -3050,7 +3077,7 @@
                     girls.forEach(g => { if (overflowLeft.length) newSeats[overflowLeft.shift()] = seatPayload(g); else { const mid = availableSeatIds({ side: 'M' })[0]; if (mid) newSeats[mid] = seatPayload(g); } });
                     await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: newSeats });
                     const seatedCount = Object.keys(newSeats).length;
-                    ctx.showMessage(`自動排座完成，已保留 ${Object.keys(lockedSeats).length} 個鎖定座位，前排需求 ${frontNeedCount} 位，手足群組 ${siblingGroupCount} 組`);
+                    ctx.showMessage(`自動排座完成，已保留 ${Object.keys(reservedSeats).length} 個既有座位，前排需求 ${frontNeedCount} 位，手足群組 ${siblingGroupCount} 組`);
                 });
             };
 
@@ -3080,7 +3107,20 @@
                     if (!s) return;
                     Object.keys(ns).forEach(k => { if (ns[k].studentId === s.id) delete ns[k]; });
                     ns[targetSeatId] = seatPayload(s);
-                    await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: ns });
+                    const writes = [setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: ns })];
+                    Object.entries(ctx.seatingArrangements || {}).forEach(([otherRouteId, arrangement]) => {
+                        if (otherRouteId === routeId) return;
+                        const otherSeats = { ...(arrangement?.seats || {}) };
+                        let changed = false;
+                        Object.keys(otherSeats).forEach(k => {
+                            if (otherSeats[k].studentId === s.id) {
+                                delete otherSeats[k];
+                                changed = true;
+                            }
+                        });
+                        if (changed) writes.push(setDoc(ctx.getDocRef('seatingArrangements', otherRouteId), { seats: otherSeats }));
+                    });
+                    await Promise.all(writes);
                 } else if (sourceSeatId) {
                     if (sourceSeatId === targetSeatId) return;
                     const temp = ns[sourceSeatId];
@@ -3095,7 +3135,7 @@
                 const seatId = item.id;
                 if (activeColor && currentSeating[seatId]) {
                     const ns = { ...currentSeating };
-                    const student = ctx.studentsPublic.find(st => st.id === ns[seatId].studentId);
+                    const student = ctx.students.find(st => st.id === ns[seatId].studentId);
                     const fallbackColor = student ? getGenderSeatColor(student.gender) : 'bg-gray-100';
                     ns[seatId] = { ...ns[seatId], color: ns[seatId].color === activeColor ? fallbackColor : activeColor };
                     await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: ns }); return;
@@ -3118,6 +3158,163 @@
                 ns[id] = { ...ns[id], locked: !ns[id].locked };
                 await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: ns });
             };
+            const buildSeatExportFileName = (ext) => `${safeFileName(currentRoute?.name || '座位表')}_座位表.${ext}`;
+            const escapeExportText = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+            const getSeatExportColor = (student, seatData = {}) => {
+                const color = seatData.color || '';
+                if (color.includes('amber')) return { fill: '#fef3c7', stroke: '#f59e0b', text: '#78350f' };
+                if (color.includes('red')) return { fill: '#fee2e2', stroke: '#f87171', text: '#7f1d1d' };
+                if (color.includes('green')) return { fill: '#dcfce7', stroke: '#86efac', text: '#14532d' };
+                if (color.includes('gray')) return { fill: '#e5e7eb', stroke: '#9ca3af', text: '#374151' };
+                if (student?.gender === '女') return { fill: '#fce7f3', stroke: '#f9a8d4', text: '#831843' };
+                return { fill: '#dbeafe', stroke: '#93c5fd', text: '#1e3a8a' };
+            };
+            const getSeatExportPlacements = () => {
+                const columns = 5;
+                const occupied = new Set();
+                const placements = [];
+                const isFree = (row, col, colSpan, rowSpan) => {
+                    if (col + colSpan - 1 > columns) return false;
+                    for (let r = row; r < row + rowSpan; r++) {
+                        for (let c = col; c < col + colSpan; c++) {
+                            if (occupied.has(`${r}-${c}`)) return false;
+                        }
+                    }
+                    return true;
+                };
+                const occupy = (row, col, colSpan, rowSpan) => {
+                    for (let r = row; r < row + rowSpan; r++) {
+                        for (let c = col; c < col + colSpan; c++) occupied.add(`${r}-${c}`);
+                    }
+                };
+                let row = 1;
+                let col = 1;
+                SHARED_SEAT_LAYOUT.forEach((item) => {
+                    const colSpan = item.colSpan || 1;
+                    const rowSpan = item.rowSpan || 1;
+                    while (!isFree(row, col, colSpan, rowSpan)) {
+                        col += 1;
+                        if (col > columns) { row += 1; col = 1; }
+                    }
+                    placements.push({ item, row, col, colSpan, rowSpan });
+                    occupy(row, col, colSpan, rowSpan);
+                    col += colSpan;
+                    if (col > columns) { row += 1; col = 1; }
+                });
+                return placements;
+            };
+            const buildSeatExportSvg = () => {
+                const cellW = 96, cellH = 70, gapX = 10, gapY = 12;
+                const pad = 28, headerH = 66;
+                const placements = getSeatExportPlacements();
+                const maxRow = Math.max(...placements.map(p => p.row + p.rowSpan - 1));
+                const gridW = 5 * cellW + 4 * gapX;
+                const gridH = maxRow * cellH + (maxRow - 1) * gapY;
+                const width = gridW + pad * 2;
+                const height = headerH + gridH + pad;
+                const seatMarkup = placements.map(({ item, row, col, colSpan, rowSpan }) => {
+                    const x = pad + (col - 1) * (cellW + gapX);
+                    const y = headerH + (row - 1) * (cellH + gapY);
+                    const w = colSpan * cellW + (colSpan - 1) * gapX;
+                    const h = rowSpan * cellH + (rowSpan - 1) * gapY;
+                    if (item.type === 'empty') return '';
+                    if (item.type !== 'seat') {
+                        return `<g><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="#e5e7eb" stroke="#d1d5db" stroke-width="2"/><text x="${x + w / 2}" y="${y + h / 2 + 5}" text-anchor="middle" font-size="15" font-weight="700" fill="#4b5563">${escapeExportText(item.label)}</text></g>`;
+                    }
+                    const sd = currentSeating[item.id];
+                    const student = sd ? ctx.students.find(st => st.id === sd.studentId) : null;
+                    const colors = getSeatExportColor(student, sd);
+                    const isCross = isCrossRouteStudent(student);
+                    const name = student ? displayStudentName(student) : item.label;
+                    const stop = student ? (student.stopName || '') : '';
+                    const route = student && isCross ? getRouteName(student.routeId) : '';
+                    const note = student?.seatNote ? '備註' : '';
+                    return `<g>
+                        <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="${student ? colors.fill : '#ffffff'}" stroke="${student ? colors.stroke : '#d1d5db'}" stroke-width="2" stroke-dasharray="${student ? '0' : '5 4'}"/>
+                        ${isCross ? `<rect x="${x + 22}" y="${y - 8}" width="${w - 44}" height="18" rx="9" fill="#f97316"/><text x="${x + w / 2}" y="${y + 5}" text-anchor="middle" font-size="10" font-weight="700" fill="#ffffff">跨線</text>` : ''}
+                        ${sd?.locked ? `<text x="${x + 7}" y="${y + 15}" font-size="12" fill="#374151">鎖</text>` : ''}
+                        ${sd?.color === CAPTAIN_SEAT_COLOR ? `<text x="${x + w - 18}" y="${y + 15}" font-size="12" fill="#b45309">★</text>` : ''}
+                        <text x="${x + w / 2}" y="${y + 25}" text-anchor="middle" font-size="13" font-weight="800" fill="${student ? colors.text : '#9ca3af'}">${escapeExportText(name)}</text>
+                        <text x="${x + w / 2}" y="${y + 42}" text-anchor="middle" font-size="10" fill="${student ? colors.text : '#9ca3af'}">${escapeExportText(stop)}</text>
+                        ${route ? `<text x="${x + w / 2}" y="${y + 56}" text-anchor="middle" font-size="9" font-weight="700" fill="#c2410c">${escapeExportText(route)}</text>` : ''}
+                        ${note ? `<text x="${x + w / 2}" y="${y + h - 6}" text-anchor="middle" font-size="9" font-weight="700" fill="#374151">${note}</text>` : ''}
+                    </g>`;
+                }).join('');
+                return `<?xml version="1.0" encoding="UTF-8"?>
+                <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+                    <style>
+                        text { font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Heiti TC", Arial, sans-serif; }
+                    </style>
+                    <rect width="100%" height="100%" fill="#ffffff"/>
+                    <text x="${width / 2}" y="42" text-anchor="middle" font-size="28" font-weight="800" fill="#111827">${escapeExportText(currentRoute?.name || '未選擇路線')} 座位表</text>
+                    <rect x="${pad - 8}" y="${headerH - 12}" width="${gridW + 16}" height="${gridH + 24}" rx="16" fill="#f3f4f6" stroke="#d1d5db" stroke-width="4"/>
+                    ${seatMarkup}
+                </svg>`;
+            };
+            const handleExportSeatPdf = () => {
+                const svg = buildSeatExportSvg();
+                const html = `<!DOCTYPE html>
+                <html lang="zh-Hant">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>${escapeExportText(currentRoute?.name || '座位表')} 座位表</title>
+                    <style>
+                        body { margin:0; background:#fff; font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",Arial,sans-serif; }
+                        .wrap { display:flex; justify-content:center; padding:8mm; }
+                        svg { max-width:190mm; height:auto; }
+                        @page { size:A4 portrait; margin:8mm; }
+                        @media print {
+                            .wrap { padding:0; }
+                            svg { max-height:280mm; max-width:190mm; }
+                        }
+                    </style>
+                </head>
+                <body>
+                    <div class="wrap">${svg}</div>
+                    <script>window.onload = () => setTimeout(() => window.print(), 500);<\/script>
+                </body>
+                </html>`;
+                const url = URL.createObjectURL(new Blob(['\ufeff', html], { type: 'text/html;charset=utf-8' }));
+                const win = window.open(url, '_blank');
+                if (!win) return ctx.showMessage('請允許瀏覽器開啟新視窗，再重新匯出座位表', 'error');
+                setTimeout(() => URL.revokeObjectURL(url), 60000);
+                ctx.showMessage('列印版座位表已開啟，可另存為 PDF');
+            };
+            const handleExportSeatImage = () => {
+                const svg = buildSeatExportSvg();
+                const blob = new Blob(['\ufeff', svg], { type: 'image/svg+xml;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const img = new Image();
+                img.onload = () => {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.naturalWidth || img.width;
+                        canvas.height = img.naturalHeight || img.height;
+                        const canvasCtx = canvas.getContext('2d');
+                        canvasCtx.fillStyle = '#ffffff';
+                        canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+                        canvasCtx.drawImage(img, 0, 0);
+                        const link = document.createElement('a');
+                        link.download = buildSeatExportFileName('jpg');
+                        link.href = canvas.toDataURL('image/jpeg', 0.95);
+                        document.body.appendChild(link);
+                        link.click();
+                        link.remove();
+                        ctx.showMessage('座位表 JPG 圖片已下載');
+                    } catch (err) {
+                        console.error(err);
+                        ctx.showMessage('座位表 JPG 匯出失敗', 'error');
+                    } finally {
+                        URL.revokeObjectURL(url);
+                    }
+                };
+                img.onerror = () => {
+                    URL.revokeObjectURL(url);
+                    ctx.showMessage('座位表 JPG 匯出失敗', 'error');
+                };
+                img.src = url;
+            };
 
             return (
                 <div className="max-w-7xl mx-auto p-4 flex flex-col lg:flex-row gap-6">
@@ -3133,11 +3330,20 @@
                                     <i className={`ph-bold ${privacyMode ? 'ph-eye' : 'ph-eye-slash'}`}></i>
                                     {privacyMode ? '顯示完整姓名' : '公開座位表'}
                                 </button>
-                                <select value={routeId} onChange={e=>setRouteId(e.target.value)} className="px-4 py-2 border rounded-lg bg-gray-50 focus:ring-2 outline-none">{ctx.activeRoutes.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+                                <button onClick={handleExportSeatPdf} className="inline-flex items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-bold text-red-700 transition hover:bg-red-100" title="開啟列印版，可另存 PDF">
+                                    <i className="ph-bold ph-printer"></i>列印/PDF
+                                </button>
+                                <button onClick={handleExportSeatImage} className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700 transition hover:bg-blue-100" title="下載 JPG 圖片">
+                                    <i className="ph-bold ph-image"></i>圖片JPG
+                                </button>
+                                <select value={routeId} onChange={e=>{ setRouteId(e.target.value); setSelectedSeat(null); }} className="px-4 py-2 border rounded-lg bg-gray-50 focus:ring-2 outline-none">{ctx.activeRoutes.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
                             </div>
                         </div>
                         {privacyMode && <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-700"><i className="ph-fill ph-shield-check mr-1"></i>公開顯示中：姓名已隱藏中間一字，只影響畫面，不會修改學生資料。</div>}
-                        <div className="bg-gray-100 rounded-2xl p-6 border-4 border-gray-200 overflow-x-auto">
+                        <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-2 text-sm leading-6 text-blue-800">
+                            <i className="ph-fill ph-arrows-left-right mr-1"></i>跨線排座：可把其他路線學生拖到目前這台車，學生原本報名路線不會被改，只會記錄實際座位。
+                        </div>
+                        <div id="seat-export-source" className="bg-gray-100 rounded-2xl p-6 border-4 border-gray-200 overflow-x-auto">
                             <div className="min-w-[320px] max-w-lg mx-auto bg-white p-4 rounded-xl shadow-sm">
                                 <div className="w-full h-4 bg-gray-300 rounded-t-full mb-4"></div>
                                 <div className="grid grid-cols-5 gap-y-3 gap-x-2 relative group" style={{ gridAutoRows: '4rem' }}>
@@ -3145,7 +3351,8 @@
                                         if (item.type === 'empty') return <div key={item.id || i} className="h-full min-h-16" style={getSeatCellStyle(item)}></div>;
                                         if (item.type !== 'seat') return <div key={item.id} style={getSeatCellStyle(item)} className="flex h-full min-h-16 items-center justify-center bg-gray-200 border-2 rounded-lg shadow-inner font-bold text-gray-600 text-sm">{item.label}</div>;
 
-                                        const sd = currentSeating[item.id], s = sd ? ctx.studentsPublic.find(st=>st.id===sd.studentId) : null, isSel = selectedSeat === item.id;
+                                        const sd = currentSeating[item.id], s = sd ? ctx.students.find(st=>st.id===sd.studentId) : null, isSel = selectedSeat === item.id;
+                                        const isCross = isCrossRouteStudent(s);
                                         return (
                                             <div
                                                 key={item.id}
@@ -3154,17 +3361,19 @@
                                                 draggable={!!s}
                                                 onDragStart={(e) => { if(s) e.dataTransfer.setData('seatId', item.id); }}
                                                 onClick={()=>handleSeatClick(item)}
-                                                title={s ? `${displayStudentName(s)}｜${s.stopName || ''}${s.seatNote ? `｜備註：${s.seatNote}` : ''}` : item.label}
+                                                title={s ? `${displayStudentName(s)}｜${getRouteName(s.routeId)}｜${s.stopName || ''}${s.seatNote ? `｜備註：${s.seatNote}` : ''}` : item.label}
                                                 style={getSeatCellStyle(item)}
                                                 className={`relative flex h-full min-h-16 flex-col items-center justify-center border-2 rounded-lg cursor-pointer transition-all ${s ? (sd.color||'bg-gray-100') : 'bg-white border-dashed'} ${isSel ? 'ring-4 ring-indigo-500 shadow-lg scale-105 z-10' : ''}`}
                                             >
                                                 {s ? <>
                                                     {sd.locked && <i className="ph-fill ph-lock-key absolute top-1 left-1 text-[11px] text-gray-700"></i>}
                                                     {sd.color === CAPTAIN_SEAT_COLOR && <i className="ph-fill ph-star absolute top-1 right-1 text-[11px] text-amber-700"></i>}
+                                                    {isCross && <div className="absolute -top-2 left-1/2 -translate-x-1/2 rounded-full bg-orange-500 px-1.5 py-0.5 text-[9px] font-bold text-white shadow">跨線</div>}
                                                     <div className="text-[11px] font-bold truncate px-1 w-full text-center">{displayStudentName(s)}</div>
                                                     <div className="text-[9px] truncate px-1 w-full text-center opacity-75">{s.stopName || ''}</div>
+                                                    {isCross && <div className="text-[8px] truncate px-1 w-full text-center font-bold text-orange-700">{getRouteName(s.routeId)}</div>}
                                                     {s.seatNote && <div className="mt-0.5 rounded bg-white/70 px-1 text-[9px] font-bold">備註</div>}
-                                                    <div className="absolute -bottom-2 left-1/2 flex -translate-x-1/2 gap-1 opacity-80 hover:opacity-100">
+                                                    <div className="seat-export-hide absolute -bottom-2 left-1/2 flex -translate-x-1/2 gap-1 opacity-80 hover:opacity-100">
                                                         <button onClick={(e)=>toggleSeatLock(item.id, e)} className={`rounded-full p-0.5 text-white ${sd.locked ? 'bg-gray-700' : 'bg-indigo-500'}`} title={sd.locked ? '取消鎖定' : '鎖定座位'}><i className={`ph-bold ${sd.locked ? 'ph-lock-key-open' : 'ph-lock-key'} text-xs`}></i></button>
                                                         <button onClick={(e)=>removeSeat(item.id, e)} className="rounded-full bg-red-500 p-0.5 text-white" title="移出座位"><i className="ph-bold ph-x text-xs"></i></button>
                                                     </div>
@@ -3180,7 +3389,12 @@
 
                     <div className="w-full lg:w-80 flex flex-col gap-6">
                         <div className="bg-white rounded-xl shadow-md p-5 border border-gray-100">
-                            <h3 className="font-bold mb-3 border-b pb-2 flex justify-between">未安排學生<span className="text-red-600 text-xs">{unassignedStudents.length}人</span></h3>
+                            <div className="mb-3 border-b pb-3 space-y-3">
+                                <h3 className="font-bold flex justify-between">未安排學生<span className="text-red-600 text-xs">{unassignedStudents.length}人</span></h3>
+                                <select value={studentPoolRouteId} onChange={e => setStudentPoolRouteId(e.target.value)} className="w-full rounded-lg border bg-white px-3 py-2 text-sm font-bold text-gray-700 focus:ring-2 outline-none">
+                                    {studentPoolRoutes.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                                </select>
+                            </div>
                             <div className="flex flex-wrap gap-2 max-h-60 overflow-y-auto pr-1">
                                 {unassignedStudents.map(s => (
                                     <div
@@ -3191,17 +3405,18 @@
                                         className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-grab active:cursor-grabbing border shadow-sm hover:shadow transition ${s.gender === '男' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-pink-50 text-pink-700 border-pink-200'}`}
                                     >
                                         <div>{displayStudentName(s)} ({s.class})</div>
-                                        <div className="font-normal opacity-75">{s.stopName}</div>
+                                        <div className="font-normal opacity-75">{getRouteName(s.routeId)}｜{s.stopName}</div>
+                                        {isCrossRouteStudent(s) && <div className="mt-1 inline-flex rounded bg-orange-100 px-1 py-0.5 text-[10px] font-bold text-orange-700">跨線到目前車輛</div>}
                                         {s.seatNote && <div className="mt-1 max-w-[12rem] truncate rounded bg-white/70 px-1 py-0.5 text-[10px] text-gray-600">備註：{s.seatNote}</div>}
                                     </div>
                                 ))}
-                                {unassignedStudents.length === 0 && <span className="text-gray-400 text-sm">此路線學生皆已安排座位</span>}
+                                {unassignedStudents.length === 0 && <span className="text-gray-400 text-sm">目前篩選沒有未安排學生</span>}
                             </div>
                             <p className="text-xs text-gray-500 mt-4 leading-relaxed bg-gray-50 p-2 rounded"><i className="ph-bold ph-hand-pointing mr-1"></i><strong>拖曳模式：</strong>直接將上方晶片拖入左側空位，或拖拉左側已入座學生互換位置。</p>
                         </div>
                         <div className="bg-white rounded-xl shadow-md p-5 border border-gray-100">
                             <button onClick={handleAutoAssign} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-md transition">一鍵自動排座</button>
-                            <p className="mt-3 text-xs leading-5 text-gray-500">規則：保留鎖定座位；備註有暈車或前排需求者優先前排；備註有兄弟姐妹坐一起者優先靠近；其餘依車站順序排序，男生優先左側、女生優先右側。</p>
+                            <p className="mt-3 text-xs leading-5 text-gray-500">規則：保留目前已安排座位，只排本路線尚未入座學生；跨線手動放上去的學生也會保留；備註有暈車或前排需求者優先前排；兄妹偏男生側，姊弟／姐弟偏女生側；其餘依車站順序排序，男生優先左側、女生優先右側。</p>
                             <div className="mt-4 border-t pt-4">
                                 <button onClick={handleClearRouteSeating} className="w-full rounded-xl border border-red-200 bg-red-50 py-3 font-bold text-red-600 transition hover:bg-red-100">
                                     <i className="ph-bold ph-eraser mr-1"></i>清空本路線座位
