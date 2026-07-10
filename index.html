@@ -394,6 +394,7 @@
                                     <>
                                         <div className="hidden md:block h-6 w-px bg-indigo-400 mx-2"></div>
                                         <button onClick={() => setCurrentPage('admin')} className={`shrink-0 px-3 py-2 rounded-md text-sm font-medium hover:bg-indigo-500 transition ${currentPage === 'admin' ? 'bg-indigo-700' : ''}`}>後台管理</button>
+                                        <button onClick={() => setCurrentPage('afternoon-loop')} className={`shrink-0 px-3 py-2 rounded-md text-sm font-medium hover:bg-indigo-500 transition ${currentPage === 'afternoon-loop' ? 'bg-indigo-700' : ''}`}>下午環線</button>
                                         <button onClick={() => setCurrentPage('seating')} className={`shrink-0 px-3 py-2 rounded-md text-sm font-medium hover:bg-indigo-500 transition ${currentPage === 'seating' ? 'bg-indigo-700' : ''}`}>座位安排</button>
                                         <button onClick={() => { ctx.setIsAdminLoggedIn(false); ctx.setIsCaptainLoggedIn(false); setCurrentPage('register'); ctx.showMessage('已安全登出'); }} className="shrink-0 md:ml-2 px-3 py-2 rounded-md text-sm font-bold bg-red-500 hover:bg-red-600 transition shadow-sm"><i className="ph-bold ph-sign-out mr-1"></i>登出</button>
                                     </>
@@ -1393,6 +1394,149 @@
             );
         };
 
+        const AfternoonLoopPage = ({ ctx }) => {
+            const [showAllStudents, setShowAllStudents] = useState(false);
+            const [vehicleFilter, setVehicleFilter] = useState('all');
+            const [selectedStudentIds, setSelectedStudentIds] = useState([]);
+            const [batchNameText, setBatchNameText] = useState('');
+            const recordsByStudentId = useMemo(() => {
+                const map = {};
+                (ctx.afternoonLoopAssignments || []).filter(r => r.scheduleType === 'fixed' && r.included !== false).forEach(r => { map[r.studentId] = r; });
+                return map;
+            }, [ctx.afternoonLoopAssignments]);
+
+            const hasAfternoonNeed = (student) => {
+                const answers = Object.values(student.surveyAnswers || {});
+                const text = [...answers, student.returnBus || '', student.returnNote || ''].join(' ');
+                return /下午|營隊|活動/.test(text) && /安排|加開|搭車|接送/.test(text) && !/不搭放學車/.test(text);
+            };
+            const candidates = useMemo(() => ctx.studentsPublic
+                .filter(student => showAllStudents || hasAfternoonNeed(student) || recordsByStudentId[student.id])
+                .sort((a, b) => (a.class || '').localeCompare(b.class || '') || (a.seat || '').localeCompare(b.seat || '') || (a.name || '').localeCompare(b.name || '')),
+                [ctx.studentsPublic, showAllStudents, recordsByStudentId]);
+            const assigned = candidates.filter(student => recordsByStudentId[student.id])
+                .filter(student => vehicleFilter === 'all' || recordsByStudentId[student.id]?.vehicle === vehicleFilter);
+            const selectableStudents = candidates.filter(student => !recordsByStudentId[student.id]);
+            const countByVehicle = ['環線 A車', '環線 B車', '待調度'].reduce((result, vehicle) => {
+                result[vehicle] = Object.values(recordsByStudentId).filter(r => r.vehicle === vehicle).length;
+                return result;
+            }, {});
+
+            const saveAssignment = async (student, changes = {}) => {
+                if (!ctx.user) return;
+                const existing = recordsByStudentId[student.id] || {};
+                const assignment = {
+                    id: `fixed_${student.id}`,
+                    scheduleType: 'fixed',
+                    studentId: student.id,
+                    studentName: student.name || '',
+                    className: student.class || '',
+                    classSeat: student.seat || '',
+                    originalRouteId: student.routeId || '',
+                    originalRouteName: ctx.routes.find(r => r.id === student.routeId)?.name || '',
+                    originalStopName: student.stopName || '',
+                    included: true,
+                    vehicle: '待調度',
+                    stopName: student.stopName || '',
+                    note: '',
+                    source: 'afternoon-loop',
+                    ...existing,
+                    ...changes,
+                    updatedAt: Date.now()
+                };
+                try {
+                    await setDoc(ctx.getDocRef('afternoonLoopAssignments', assignment.id), assignment);
+                } catch (err) {
+                    console.error(err);
+                    ctx.showMessage('下午環線調度儲存失敗，請檢查網路或 Firebase 權限', 'error');
+                }
+            };
+
+            const removeAssignment = async (student) => {
+                const record = recordsByStudentId[student.id];
+                if (!record) return;
+                try {
+                    await deleteDoc(ctx.getDocRef('afternoonLoopAssignments', record.id));
+                } catch (err) {
+                    console.error(err);
+                    ctx.showMessage('移出下午環線失敗，請檢查網路或 Firebase 權限', 'error');
+                }
+            };
+
+            const assignSelectedStudents = (vehicle) => {
+                const selected = selectableStudents.filter(student => selectedStudentIds.includes(student.id));
+                if (!selected.length) return ctx.showMessage('請先勾選要安排的學生');
+                ctx.showConfirm(`確定將已勾選的 ${selected.length} 位學生固定安排到${vehicle}嗎？這只會建立下午環線資料，不會修改學生報名、原本路線或座位。`, async () => {
+                    try {
+                        await Promise.all(selected.map(student => saveAssignment(student, { vehicle })));
+                        setSelectedStudentIds([]);
+                        ctx.showMessage(`已將 ${selected.length} 位學生固定安排到${vehicle}`);
+                    } catch (err) {
+                        ctx.showMessage('部分下午環線調度儲存失敗', 'error');
+                    }
+                });
+            };
+
+            const toggleStudent = (studentId) => setSelectedStudentIds(prev => prev.includes(studentId) ? prev.filter(id => id !== studentId) : [...prev, studentId]);
+            const selectAll = () => setSelectedStudentIds(selectableStudents.map(student => student.id));
+            const selectBatchNames = () => {
+                const names = [...new Set(batchNameText.split(/[\n,，、\s]+/).map(name => name.trim()).filter(Boolean))];
+                if (!names.length) return ctx.showMessage('請先貼上學生姓名');
+                const byName = new Map(ctx.studentsPublic.map(student => [String(student.name || '').trim(), student]));
+                const matched = names.map(name => byName.get(name)).filter(Boolean).filter(student => !recordsByStudentId[student.id]);
+                const missing = names.filter(name => !byName.has(name));
+                setShowAllStudents(true);
+                setSelectedStudentIds([...new Set(matched.map(student => student.id))]);
+                ctx.showMessage(missing.length ? `已對照 ${matched.length} 位；找不到 ${missing.length} 位：${missing.join('、')}` : `已對照並勾選 ${matched.length} 位學生`);
+            };
+
+            return (
+                <div className="mx-auto max-w-7xl space-y-6 p-4">
+                    <div className="rounded-xl border border-indigo-100 bg-white p-5 shadow-md">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                            <div>
+                                <h2 className="flex items-center text-xl font-black text-gray-900"><i className="ph-fill ph-bus mr-2 text-indigo-600"></i>下午環線調度</h2>
+                                <p className="mt-2 text-sm leading-6 text-gray-600">這是固定的下午環線名單；不會改學生原本報名路線、戶籍資料、車站或已安排座位。</p>
+                            </div>
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                <div><label className="mb-1 block text-xs font-bold text-gray-500">車輛篩選</label><select value={vehicleFilter} onChange={e => setVehicleFilter(e.target.value)} className="w-full rounded-lg border bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-400"><option value="all">全部車輛</option><option value="環線 A車">環線 A車</option><option value="環線 B車">環線 B車</option><option value="待調度">待調度</option></select></div>
+                                <button onClick={() => assignSelectedStudents('環線 A車')} className="mt-5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-blue-700"><i className="ph-bold ph-bus mr-1"></i>已勾選排入 A車</button>
+                                <button onClick={() => assignSelectedStudents('環線 B車')} className="mt-5 rounded-lg bg-violet-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-violet-700"><i className="ph-bold ph-bus mr-1"></i>已勾選排入 B車</button>
+                            </div>
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-2 text-xs font-bold">
+                            <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-indigo-700">固定下午環線</span>
+                            <span className="rounded-full bg-blue-50 px-3 py-1.5 text-blue-700">A車 {countByVehicle['環線 A車']} 人</span>
+                            <span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-700">B車 {countByVehicle['環線 B車']} 人</span>
+                            <span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-700">待調度 {countByVehicle['待調度']} 人</span>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
+                        <div className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-md">
+                            <div className="flex flex-col gap-2 border-b bg-gray-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                                <div><h3 className="font-black text-gray-900">已安排學生 <span className="text-indigo-600">{assigned.length} 人</span></h3><p className="mt-1 text-xs text-gray-500">可直接調整環線車次、下車站與固定備註。</p></div>
+                                <button onClick={() => setShowAllStudents(!showAllStudents)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100">{showAllStudents ? '只看下午候選' : '手動加入其他學生'}</button>
+                            </div>
+                            {assigned.length === 0 ? <div className="p-10 text-center text-sm text-gray-500">尚未建立固定下午環線名單。請在右側勾選學生後，指定排入 A 車或 B 車。</div> : (
+                                <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="border-b bg-white text-left text-xs text-gray-500"><tr><th className="px-4 py-3">學生</th><th className="px-4 py-3">原報名路線／站點</th><th className="px-4 py-3">環線車次</th><th className="px-4 py-3">下車站</th><th className="px-4 py-3">當日備註</th><th className="px-4 py-3"></th></tr></thead><tbody className="divide-y">{assigned.map(student => { const record = recordsByStudentId[student.id]; return <tr key={student.id} className="align-top"><td className="px-4 py-3 font-bold text-gray-900">{student.name}<div className="mt-1 text-xs font-normal text-gray-500">{student.class || '未填班級'} 班 {student.seat || '—'} 號</div></td><td className="px-4 py-3 text-xs text-gray-600">{record.originalRouteName || '未填路線'}<div className="mt-1">{record.originalStopName || '未填站點'}</div></td><td className="px-4 py-3"><select value={record.vehicle || '待調度'} onChange={e => saveAssignment(student, { vehicle: e.target.value })} className="rounded-lg border bg-white px-2 py-2 text-xs font-bold"><option value="待調度">待調度</option><option value="環線 A車">環線 A車</option><option value="環線 B車">環線 B車</option></select></td><td className="px-4 py-3"><input value={record.stopName || ''} onChange={e => saveAssignment(student, { stopName: e.target.value })} placeholder="下車站" className="w-32 rounded-lg border px-2 py-2 text-xs" /></td><td className="px-4 py-3"><input value={record.note || ''} onChange={e => saveAssignment(student, { note: e.target.value })} placeholder="例如：16:05 搭車" className="w-40 rounded-lg border px-2 py-2 text-xs" /></td><td className="px-4 py-3"><button onClick={() => removeAssignment(student)} className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 hover:bg-red-100" title="移出下午環線"><i className="ph-bold ph-x"></i></button></td></tr>; })}</tbody></table></div>
+                            )}
+                        </div>
+
+                        <aside className="rounded-xl border border-amber-100 bg-white p-5 shadow-md">
+                            <h3 className="flex items-center font-black text-amber-900"><i className="ph-fill ph-list-checks mr-2 text-lg"></i>選擇下午環線學生</h3>
+                            <p className="mt-2 text-xs leading-5 text-gray-500">可貼上多位姓名自動對照，也可手動勾選、全選或全部取消，再一次指定 A 車或 B 車。</p>
+                            <textarea value={batchNameText} onChange={e => setBatchNameText(e.target.value)} rows="4" placeholder="每行一位學生姓名，可直接貼上名單" className="mt-3 w-full rounded-lg border p-2 text-xs outline-none focus:ring-2 focus:ring-indigo-400" />
+                            <button onClick={selectBatchNames} className="mt-2 w-full rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100">對照名單並勾選</button>
+                            <div className="mt-3 flex gap-2"><button onClick={selectAll} className="flex-1 rounded-lg border border-gray-200 bg-white px-2 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100">全選</button><button onClick={() => setSelectedStudentIds([])} className="flex-1 rounded-lg border border-gray-200 bg-white px-2 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100">全部取消</button></div>
+                            <div className="mt-3 text-xs font-bold text-indigo-700">已勾選 {selectedStudentIds.length} 人</div>
+                            <div className="mt-3 max-h-[26rem] space-y-2 overflow-y-auto pr-1">{selectableStudents.map(student => { const candidate = hasAfternoonNeed(student); const checked = selectedStudentIds.includes(student.id); return <label key={student.id} className={`flex cursor-pointer items-start gap-2 rounded-lg border p-3 ${candidate ? 'border-amber-100 bg-amber-50/50' : 'border-gray-200 bg-gray-50'}`}><input type="checkbox" checked={checked} onChange={() => toggleStudent(student.id)} className="mt-1 h-4 w-4 accent-indigo-600" /><span><span className="font-bold text-gray-900">{student.name}</span><span className="mt-1 block text-[11px] text-gray-500">{student.class || '未填班級'} 班 {student.seat || '—'} 號｜{ctx.routes.find(r => r.id === student.routeId)?.name || '未填路線'}</span><span className="mt-1 block text-[11px] text-gray-500">原站：{student.stopName || '未填站點'}</span>{candidate && student.returnNote && <span className="mt-1 block text-[11px] text-amber-800">備註：{student.returnNote}</span>}</span></label>; })}{selectableStudents.length === 0 && <div className="py-8 text-center text-sm text-gray-500">目前沒有可選擇的學生</div>}</div>
+                        </aside>
+                    </div>
+                </div>
+            );
+        };
+
         const AdminPage = ({ ctx }) => {
             const [editModalOpen, setEditModalOpen] = useState(false);
             const [editFormData, setEditFormData] = useState({});
@@ -1805,7 +1949,7 @@
             };
 
             const deleteSessionData = async (sessionId) => {
-                const cols = ['students_public', 'students_private', 'routes', 'leaves', 'attendanceRecords', 'seatingArrangements', 'config'];
+                const cols = ['students_public', 'students_private', 'routes', 'leaves', 'attendanceRecords', 'afternoonLoopAssignments', 'seatingArrangements', 'config'];
                 const prefix = `${sessionId}_`;
                 const promises = [];
                 for (const colName of cols) {
@@ -1866,7 +2010,7 @@
                 const sessionId = ctx.masterConfig.activeSessionId;
                 const sessionName = currentSessionName;
                 const exportedAt = new Date();
-                const collections = ['students_public', 'students_private', 'routes', 'leaves', 'attendanceRecords', 'seatingArrangements'];
+                const collections = ['students_public', 'students_private', 'routes', 'leaves', 'attendanceRecords', 'afternoonLoopAssignments', 'seatingArrangements'];
 
                 try {
                     ctx.showMessage('正在整理完整備份，請稍候...');
@@ -1889,6 +2033,7 @@
                             routes: backupCollections.routes.length,
                             leaves: backupCollections.leaves.length,
                             attendanceRecords: backupCollections.attendanceRecords.length,
+                            afternoonLoopAssignments: backupCollections.afternoonLoopAssignments.length,
                             seatingArrangements: backupCollections.seatingArrangements.length,
                             configDocs: backupCollections.config.length
                         },
@@ -1952,7 +2097,7 @@
 
                 const targetSessionId = ctx.masterConfig.activeSessionId;
                 const backupSessionName = backup.session?.name || '未命名期程';
-                const restoreCollections = ['students_public', 'students_private', 'routes', 'leaves', 'attendanceRecords', 'seatingArrangements'];
+                const restoreCollections = ['students_public', 'students_private', 'routes', 'leaves', 'attendanceRecords', 'afternoonLoopAssignments', 'seatingArrangements'];
                 const counts = restoreCollections.reduce((acc, colName) => {
                     acc[colName] = getBackupCollectionDocs(backup, colName).length;
                     return acc;
@@ -1960,7 +2105,7 @@
                 const confirmMsg = [
                     `確定要用「${restoreFile.name}」還原到目前期程「${currentSessionName}」嗎？`,
                     `備份來源期程：${backupSessionName} (${backup.session.id})`,
-                    `將先清空目前期程資料，再寫回：學生 ${counts.students_public}/${counts.students_private} 筆、路線 ${counts.routes} 筆、座位 ${counts.seatingArrangements} 筆、點名 ${counts.attendanceRecords} 筆、請假 ${counts.leaves} 筆。`,
+                    `將先清空目前期程資料，再寫回：學生 ${counts.students_public}/${counts.students_private} 筆、路線 ${counts.routes} 筆、座位 ${counts.seatingArrangements} 筆、點名 ${counts.attendanceRecords} 筆、下午環線 ${counts.afternoonLoopAssignments} 筆、請假 ${counts.leaves} 筆。`,
                     '這個動作會覆蓋目前期程資料，請確認已先下載最新 JSON 備份。'
                 ].join('\n');
 
@@ -2905,21 +3050,39 @@
             const [activeColor, setActiveColor] = useState(null);
             const [privacyMode, setPrivacyMode] = useState(false);
 
+            const afternoonVehicles = [
+                { id: 'afternoon-loop-a', name: '下午環線 A車', capacity: 43, stops: [] },
+                { id: 'afternoon-loop-b', name: '下午環線 B車', capacity: 43, stops: [] }
+            ];
+            const seatingVehicles = [...ctx.activeRoutes, ...afternoonVehicles];
+            const isAfternoonVehicle = routeId === 'afternoon-loop-a' || routeId === 'afternoon-loop-b';
+            const afternoonVehicleName = routeId === 'afternoon-loop-a' ? '環線 A車' : routeId === 'afternoon-loop-b' ? '環線 B車' : '';
+            const seatingKey = routeId;
+
             useEffect(() => {
-                if (!routeId && ctx.activeRoutes.length > 0) setRouteId(ctx.activeRoutes[0].id);
+                if (!routeId && seatingVehicles.length > 0) setRouteId(seatingVehicles[0].id);
             }, [ctx.activeRoutes, routeId]);
 
             if (!ctx.isAdminLoggedIn) return null;
 
-            const currentSeating = ctx.seatingArrangements[routeId]?.seats || {};
-            const routeStudents = ctx.students.filter(s => s.routeId === routeId);
-            const assignedStudentIds = Object.values(ctx.seatingArrangements || {}).flatMap(arr => Object.values(arr?.seats || {}).map(s => s.studentId));
+            const currentSeating = ctx.seatingArrangements[seatingKey]?.seats || {};
+            const afternoonStudentIds = new Set((ctx.afternoonLoopAssignments || [])
+                .filter(record => record.scheduleType === 'fixed' && record.vehicle === afternoonVehicleName && record.included !== false)
+                .map(record => record.studentId));
+            const routeStudents = isAfternoonVehicle
+                ? ctx.students.filter(s => afternoonStudentIds.has(s.id))
+                : ctx.students.filter(s => s.routeId === routeId);
+            const assignedStudentIds = isAfternoonVehicle
+                ? Object.values(currentSeating).map(s => s.studentId)
+                : Object.entries(ctx.seatingArrangements || {})
+                    .filter(([id]) => !id.startsWith('afternoon-loop-'))
+                    .flatMap(([, arr]) => Object.values(arr?.seats || {}).map(s => s.studentId));
             const assignedStudentIdSet = new Set(assignedStudentIds);
-            const currentRoute = ctx.activeRoutes.find(r => r.id === routeId);
+            const currentRoute = seatingVehicles.find(r => r.id === routeId);
             const currentSessionName = ctx.masterConfig?.sessions?.find(s => s.id === ctx.masterConfig?.activeSessionId)?.name || ctx.masterConfig?.activeSessionId || '目前期程';
             const stopOrder = currentRoute?.stops || [];
-            const getRouteName = (id) => ctx.routes.find(r => r.id === id)?.name || ctx.activeRoutes.find(r => r.id === id)?.name || '未設定路線';
-            const isCrossRouteStudent = (student) => student && student.routeId && student.routeId !== routeId;
+            const getRouteName = (id) => seatingVehicles.find(r => r.id === id)?.name || ctx.routes.find(r => r.id === id)?.name || '未設定路線';
+            const isCrossRouteStudent = (student) => !isAfternoonVehicle && student && student.routeId && student.routeId !== routeId;
             const maskStudentName = (name) => {
                 const clean = String(name || '').trim();
                 if (!clean) return '';
@@ -2935,9 +3098,13 @@
                 if (classDiff !== 0) return classDiff;
                 return (parseInt(a.seat) || 999) - (parseInt(b.seat) || 999);
             });
-            const studentPoolRoutes = [{ id: 'all', name: '全部路線未排（跨線用）' }, { id: 'current', name: '本車路線未排' }, ...ctx.activeRoutes.map(r => ({ id: r.id, name: `${r.name}未排` }))];
+            const studentPoolRoutes = isAfternoonVehicle
+                ? [{ id: 'current', name: '本下午環線未排' }]
+                : [{ id: 'all', name: '全部路線未排（跨線用）' }, { id: 'current', name: '本車路線未排' }, ...ctx.activeRoutes.map(r => ({ id: r.id, name: `${r.name}未排` }))];
             const getPoolStudents = () => {
-                const base = studentPoolRouteId === 'all'
+                const base = isAfternoonVehicle
+                    ? routeStudents
+                    : studentPoolRouteId === 'all'
                     ? ctx.students
                     : ctx.students.filter(s => s.routeId === (studentPoolRouteId === 'current' ? routeId : studentPoolRouteId));
                 return base.filter(s => !assignedStudentIdSet.has(s.id));
@@ -2960,14 +3127,17 @@
                 studentId: student.id,
                 originalRouteId: student.routeId || '',
                 originalStopName: student.stopName || '',
-                assignedVehicleRouteId: routeId,
+                assignedVehicleRouteId: seatingKey,
+                assignedStopName: isAfternoonVehicle
+                    ? ((ctx.afternoonLoopAssignments || []).find(record => record.scheduleType === 'fixed' && record.studentId === student.id && record.vehicle === afternoonVehicleName)?.stopName || student.stopName || '')
+                    : (student.stopName || ''),
                 color: existing.color || getGenderSeatColor(student.gender),
                 locked: existing.locked || false
             });
 
             const handleAutoAssign = () => {
                 if (!routeId) return;
-                ctx.showConfirm('自動排座會保留目前已安排座位，只排還沒入座的本路線學生。確定繼續？', async () => {
+                ctx.showConfirm(`自動排座會保留目前已安排座位，只排還沒入座的${isAfternoonVehicle ? '本下午環線學生' : '本路線學生'}。確定繼續？`, async () => {
                     const reservedSeats = {};
                     Object.entries(currentSeating).forEach(([seatId, data]) => {
                         reservedSeats[seatId] = data;
@@ -3075,7 +3245,7 @@
                     const overflowLeft = availableSeatIds({ side: 'L' }).reverse();
                     boys.forEach(b => { if (overflowRight.length) newSeats[overflowRight.shift()] = seatPayload(b); else { const mid = availableSeatIds({ side: 'M' })[0]; if (mid) newSeats[mid] = seatPayload(b); } });
                     girls.forEach(g => { if (overflowLeft.length) newSeats[overflowLeft.shift()] = seatPayload(g); else { const mid = availableSeatIds({ side: 'M' })[0]; if (mid) newSeats[mid] = seatPayload(g); } });
-                    await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: newSeats });
+                    await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: newSeats });
                     const seatedCount = Object.keys(newSeats).length;
                     ctx.showMessage(`自動排座完成，已保留 ${Object.keys(reservedSeats).length} 個既有座位，前排需求 ${frontNeedCount} 位，手足群組 ${siblingGroupCount} 組`);
                 });
@@ -3090,7 +3260,7 @@
                 }
                 const routeName = currentRoute?.name || '目前路線';
                 ctx.showConfirm(`確定要清空「${routeName}」的全部座位嗎？這只會撤除座位安排，不會刪除學生報名資料。`, async () => {
-                    await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: {} });
+                    await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: {} });
                     setSelectedSeat(null);
                     ctx.showMessage(`已清空「${routeName}」的 ${seatCount} 個座位安排`);
                 });
@@ -3107,9 +3277,10 @@
                     if (!s) return;
                     Object.keys(ns).forEach(k => { if (ns[k].studentId === s.id) delete ns[k]; });
                     ns[targetSeatId] = seatPayload(s);
-                    const writes = [setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: ns })];
+                    const writes = [setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns })];
                     Object.entries(ctx.seatingArrangements || {}).forEach(([otherRouteId, arrangement]) => {
-                        if (otherRouteId === routeId) return;
+                        if (otherRouteId === seatingKey) return;
+                        if (isAfternoonVehicle ? !otherRouteId.startsWith('afternoon-loop-') : otherRouteId.startsWith('afternoon-loop-')) return;
                         const otherSeats = { ...(arrangement?.seats || {}) };
                         let changed = false;
                         Object.keys(otherSeats).forEach(k => {
@@ -3126,7 +3297,7 @@
                     const temp = ns[sourceSeatId];
                     if (ns[targetSeatId]) { ns[sourceSeatId] = ns[targetSeatId]; } else { delete ns[sourceSeatId]; }
                     if (temp) ns[targetSeatId] = temp;
-                    await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: ns });
+                    await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns });
                 }
             };
 
@@ -3138,7 +3309,7 @@
                     const student = ctx.students.find(st => st.id === ns[seatId].studentId);
                     const fallbackColor = student ? getGenderSeatColor(student.gender) : 'bg-gray-100';
                     ns[seatId] = { ...ns[seatId], color: ns[seatId].color === activeColor ? fallbackColor : activeColor };
-                    await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: ns }); return;
+                    await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns }); return;
                 }
                 if (!selectedSeat) { if (currentSeating[seatId]) setSelectedSeat(seatId); }
                 else {
@@ -3146,17 +3317,17 @@
                     const ns = { ...currentSeating }, tmp = ns[selectedSeat];
                     if (ns[seatId]) ns[selectedSeat] = ns[seatId]; else delete ns[selectedSeat];
                     if (tmp) ns[seatId] = tmp;
-                    await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: ns }); setSelectedSeat(null);
+                    await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns }); setSelectedSeat(null);
                 }
             };
 
-            const removeSeat = async (id, e) => { e.stopPropagation(); const ns = { ...currentSeating }; delete ns[id]; await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: ns }); };
+            const removeSeat = async (id, e) => { e.stopPropagation(); const ns = { ...currentSeating }; delete ns[id]; await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns }); };
             const toggleSeatLock = async (id, e) => {
                 e.stopPropagation();
                 const ns = { ...currentSeating };
                 if (!ns[id]) return;
                 ns[id] = { ...ns[id], locked: !ns[id].locked };
-                await setDoc(ctx.getDocRef('seatingArrangements', routeId), { seats: ns });
+                await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns });
             };
             const buildSeatExportFileName = (ext) => `${safeFileName(currentRoute?.name || '座位表')}_座位表.${ext}`;
             const escapeExportText = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -3203,6 +3374,11 @@
                 });
                 return placements;
             };
+            const getShortSeatLabel = (seatId, fallback = '') => {
+                const text = String(seatId || fallback || '');
+                if (text.endsWith('-m')) return text.replace('-m', '中');
+                return text.replace(/^(\d+)-(\d+)$/, '$1-$2');
+            };
             const buildSeatExportSvg = () => {
                 const cellW = 96, cellH = 70, gapX = 10, gapY = 12;
                 const pad = 28, headerH = 66;
@@ -3226,13 +3402,15 @@
                     const colors = getSeatExportColor(student, sd);
                     const isCross = isCrossRouteStudent(student);
                     const name = student ? displayStudentName(student) : item.label;
-                    const stop = student ? (student.stopName || '') : '';
+                    const stop = student ? (sd?.assignedStopName || student.stopName || '') : '';
                     const route = student && isCross ? getRouteName(student.routeId) : '';
                     const note = student?.seatNote ? '備註' : '';
+                    const seatNo = getShortSeatLabel(item.id, item.label);
                     return `<g>
                         <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="${student ? colors.fill : '#ffffff'}" stroke="${student ? colors.stroke : '#d1d5db'}" stroke-width="2" stroke-dasharray="${student ? '0' : '5 4'}"/>
                         ${isCross ? `<rect x="${x + 22}" y="${y - 8}" width="${w - 44}" height="18" rx="9" fill="#f97316"/><text x="${x + w / 2}" y="${y + 5}" text-anchor="middle" font-size="10" font-weight="700" fill="#ffffff">跨線</text>` : ''}
-                        ${sd?.locked ? `<text x="${x + 7}" y="${y + 15}" font-size="12" fill="#374151">鎖</text>` : ''}
+                        <text x="${x + 7}" y="${y + 14}" font-size="10" font-weight="800" fill="#374151">${escapeExportText(seatNo)}</text>
+                        ${sd?.locked ? `<text x="${x + 7}" y="${y + 29}" font-size="12" fill="#374151">鎖</text>` : ''}
                         ${sd?.color === CAPTAIN_SEAT_COLOR ? `<text x="${x + w - 18}" y="${y + 15}" font-size="12" fill="#b45309">★</text>` : ''}
                         <text x="${x + w / 2}" y="${y + 25}" text-anchor="middle" font-size="13" font-weight="800" fill="${student ? colors.text : '#9ca3af'}">${escapeExportText(name)}</text>
                         <text x="${x + w / 2}" y="${y + 42}" text-anchor="middle" font-size="10" fill="${student ? colors.text : '#9ca3af'}">${escapeExportText(stop)}</text>
@@ -3336,12 +3514,12 @@
                                 <button onClick={handleExportSeatImage} className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700 transition hover:bg-blue-100" title="下載 JPG 圖片">
                                     <i className="ph-bold ph-image"></i>圖片JPG
                                 </button>
-                                <select value={routeId} onChange={e=>{ setRouteId(e.target.value); setSelectedSeat(null); }} className="px-4 py-2 border rounded-lg bg-gray-50 focus:ring-2 outline-none">{ctx.activeRoutes.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+                                <select value={routeId} onChange={e=>{ setRouteId(e.target.value); setSelectedSeat(null); }} className="px-4 py-2 border rounded-lg bg-gray-50 focus:ring-2 outline-none">{seatingVehicles.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
                             </div>
                         </div>
                         {privacyMode && <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-700"><i className="ph-fill ph-shield-check mr-1"></i>公開顯示中：姓名已隱藏中間一字，只影響畫面，不會修改學生資料。</div>}
                         <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-2 text-sm leading-6 text-blue-800">
-                            <i className="ph-fill ph-arrows-left-right mr-1"></i>跨線排座：可把其他路線學生拖到目前這台車，學生原本報名路線不會被改，只會記錄實際座位。
+                            <i className={`ph-fill ${isAfternoonVehicle ? 'ph-sun' : 'ph-arrows-left-right'} mr-1`}></i>{isAfternoonVehicle ? `下午環線座位：只顯示已固定安排到${afternoonVehicleName}的學生；此座位表獨立於早上各路線。` : '跨線排座：可把其他路線學生拖到目前這台車，學生原本報名路線不會被改，只會記錄實際座位。'}
                         </div>
                         <div id="seat-export-source" className="bg-gray-100 rounded-2xl p-6 border-4 border-gray-200 overflow-x-auto">
                             <div className="min-w-[320px] max-w-lg mx-auto bg-white p-4 rounded-xl shadow-sm">
@@ -3353,6 +3531,7 @@
 
                                         const sd = currentSeating[item.id], s = sd ? ctx.students.find(st=>st.id===sd.studentId) : null, isSel = selectedSeat === item.id;
                                         const isCross = isCrossRouteStudent(s);
+                                        const seatNo = getShortSeatLabel(item.id, item.label);
                                         return (
                                             <div
                                                 key={item.id}
@@ -3366,11 +3545,12 @@
                                                 className={`relative flex h-full min-h-16 flex-col items-center justify-center border-2 rounded-lg cursor-pointer transition-all ${s ? (sd.color||'bg-gray-100') : 'bg-white border-dashed'} ${isSel ? 'ring-4 ring-indigo-500 shadow-lg scale-105 z-10' : ''}`}
                                             >
                                                 {s ? <>
-                                                    {sd.locked && <i className="ph-fill ph-lock-key absolute top-1 left-1 text-[11px] text-gray-700"></i>}
+                                                    <div className="absolute left-1 top-1 rounded bg-white/80 px-1 text-[9px] font-black leading-4 text-gray-700 shadow-sm">{seatNo}</div>
+                                                    {sd.locked && <i className="ph-fill ph-lock-key absolute top-5 left-1 text-[11px] text-gray-700"></i>}
                                                     {sd.color === CAPTAIN_SEAT_COLOR && <i className="ph-fill ph-star absolute top-1 right-1 text-[11px] text-amber-700"></i>}
                                                     {isCross && <div className="absolute -top-2 left-1/2 -translate-x-1/2 rounded-full bg-orange-500 px-1.5 py-0.5 text-[9px] font-bold text-white shadow">跨線</div>}
                                                     <div className="text-[11px] font-bold truncate px-1 w-full text-center">{displayStudentName(s)}</div>
-                                                    <div className="text-[9px] truncate px-1 w-full text-center opacity-75">{s.stopName || ''}</div>
+                                                    <div className="text-[9px] truncate px-1 w-full text-center opacity-75">{sd.assignedStopName || s.stopName || ''}</div>
                                                     {isCross && <div className="text-[8px] truncate px-1 w-full text-center font-bold text-orange-700">{getRouteName(s.routeId)}</div>}
                                                     {s.seatNote && <div className="mt-0.5 rounded bg-white/70 px-1 text-[9px] font-bold">備註</div>}
                                                     <div className="seat-export-hide absolute -bottom-2 left-1/2 flex -translate-x-1/2 gap-1 opacity-80 hover:opacity-100">
@@ -3416,12 +3596,12 @@
                         </div>
                         <div className="bg-white rounded-xl shadow-md p-5 border border-gray-100">
                             <button onClick={handleAutoAssign} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-md transition">一鍵自動排座</button>
-                            <p className="mt-3 text-xs leading-5 text-gray-500">規則：保留目前已安排座位，只排本路線尚未入座學生；跨線手動放上去的學生也會保留；備註有暈車或前排需求者優先前排；兄妹偏男生側，姊弟／姐弟偏女生側；其餘依車站順序排序，男生優先左側、女生優先右側。</p>
+                            <p className="mt-3 text-xs leading-5 text-gray-500">規則：保留目前已安排座位，只排{isAfternoonVehicle ? '本下午環線' : '本路線'}尚未入座學生；備註有暈車或前排需求者優先前排；兄妹偏男生側，姊弟／姐弟偏女生側；其餘依車站順序排序，男生優先左側、女生優先右側。</p>
                             <div className="mt-4 border-t pt-4">
                                 <button onClick={handleClearRouteSeating} className="w-full rounded-xl border border-red-200 bg-red-50 py-3 font-bold text-red-600 transition hover:bg-red-100">
-                                    <i className="ph-bold ph-eraser mr-1"></i>清空本路線座位
+                                    <i className="ph-bold ph-eraser mr-1"></i>清空本{isAfternoonVehicle ? '下午環線' : '路線'}座位
                                 </button>
-                                <p className="mt-2 text-xs leading-5 text-gray-500">只撤除目前選取路線的座位安排，學生報名資料與路線資料都會保留。</p>
+                                <p className="mt-2 text-xs leading-5 text-gray-500">只撤除目前選取車輛的座位安排，學生報名資料、下午調度與路線資料都會保留。</p>
                             </div>
                         </div>
                         <div className="bg-white rounded-xl shadow-md p-5 border border-gray-100">
@@ -3456,6 +3636,7 @@
             const [studentsPrivate, setStudentsPrivate] = useState([]);
             const [leaves, setLeaves] = useState([]);
             const [attendanceRecords, setAttendanceRecords] = useState([]);
+            const [afternoonLoopAssignments, setAfternoonLoopAssignments] = useState([]);
             const [seatingArrangements, setSeatingArrangements] = useState({});
             const [appConfig, setAppConfig] = useState({ adminPasswordHash: '', rollCallPasswordHash: '', registrationNotice: DEFAULT_REGISTRATION_NOTICE, surveyQuestions: [], surveyQuestionsConfigured: true, surveyTitle: DEFAULT_SURVEY_TITLE, surveyDescription: DEFAULT_SURVEY_DESCRIPTION, surveyNoteLabel: DEFAULT_SURVEY_NOTE_LABEL, surveyNoteEnabled: true, returnOptions: DEFAULT_RETURN_OPTIONS, registrationClosed: false, registrationDeadline: '', rollCallClosed: false, rollCallStartDate: '', rollCallEndDate: '' });
 
@@ -3518,6 +3699,7 @@
                 let uPublic = () => {};
                 let uLeaves = () => {};
                 let uAttendance = () => {};
+                let uAfternoonLoop = () => {};
                 let uSeating = () => {};
                 if (canSeeRoster) {
                     uPublic = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'students_public'), snap => {
@@ -3532,6 +3714,10 @@
                         setAttendanceRecords(filterAndMapSessionDocs(snap.docs, sessionId));
                     }, console.error);
 
+                    uAfternoonLoop = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'afternoonLoopAssignments'), snap => {
+                        setAfternoonLoopAssignments(filterAndMapSessionDocs(snap.docs, sessionId));
+                    }, console.error);
+
                     uSeating = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'seatingArrangements'), snap => {
                         const mapped = filterAndMapSessionDocs(snap.docs, sessionId);
                         const dict = {};
@@ -3542,6 +3728,7 @@
                     setStudentsPublic([]);
                     setLeaves([]);
                     setAttendanceRecords([]);
+                    setAfternoonLoopAssignments([]);
                     setSeatingArrangements({});
                 }
 
@@ -3611,7 +3798,7 @@
                     }
                 }, console.error);
 
-                return () => { uPublic(); uLeaves(); uAttendance(); uSeating(); uRoutes(); uConfig(); uSessionConfig(); };
+                return () => { uPublic(); uLeaves(); uAttendance(); uAfternoonLoop(); uSeating(); uRoutes(); uConfig(); uSessionConfig(); };
             }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, isCaptainLoggedIn]);
 
             // 3. 監聽私有資料 (僅管理員)
@@ -3692,7 +3879,7 @@
             }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, studentsPublic, studentsPrivate]);
 
             const canSeeRoster = isAdminLoggedIn || isCaptainLoggedIn;
-            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, setIsAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, hashPassword, getDocRef, routeCounts, canSeeRoster, findPublicStudentsByLookupKey, countPublicStudentsByRoute };
+            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, setIsAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, hashPassword, getDocRef, routeCounts, canSeeRoster, findPublicStudentsByLookupKey, countPublicStudentsByRoute };
 
             const renderContent = () => {
                 switch (currentPage) {
@@ -3700,6 +3887,7 @@
                     case 'lookup': return <LookupPage ctx={ctx} />;
                     case 'leave': return <LeavePage ctx={ctx} />;
                     case 'rollcall': return <RollCallPage ctx={ctx} />;
+                    case 'afternoon-loop': return <AfternoonLoopPage ctx={ctx} />;
                     case 'admin': return <AdminPage ctx={ctx} />;
                     case 'seating': return <SeatingPage ctx={ctx} />;
                     default: return <RegisterPage ctx={ctx} />;
