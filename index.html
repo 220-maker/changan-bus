@@ -394,8 +394,6 @@
                                     <>
                                         <div className="hidden md:block h-6 w-px bg-indigo-400 mx-2"></div>
                                         <button onClick={() => setCurrentPage('admin')} className={`shrink-0 px-3 py-2 rounded-md text-sm font-medium hover:bg-indigo-500 transition ${currentPage === 'admin' ? 'bg-indigo-700' : ''}`}>後台管理</button>
-                                        <button onClick={() => setCurrentPage('afternoon-loop')} className={`shrink-0 px-3 py-2 rounded-md text-sm font-medium hover:bg-indigo-500 transition ${currentPage === 'afternoon-loop' ? 'bg-indigo-700' : ''}`}>下午環線</button>
-                                        <button onClick={() => setCurrentPage('seating')} className={`shrink-0 px-3 py-2 rounded-md text-sm font-medium hover:bg-indigo-500 transition ${currentPage === 'seating' ? 'bg-indigo-700' : ''}`}>座位安排</button>
                                         <button onClick={() => { ctx.setIsAdminLoggedIn(false); ctx.setIsCaptainLoggedIn(false); setCurrentPage('register'); ctx.showMessage('已安全登出'); }} className="shrink-0 md:ml-2 px-3 py-2 rounded-md text-sm font-bold bg-red-500 hover:bg-red-600 transition shadow-sm"><i className="ph-bold ph-sign-out mr-1"></i>登出</button>
                                     </>
                                 )}
@@ -1574,6 +1572,8 @@
                 { id: 'routes', label: '路線與站點', icon: 'ph-map-trifold' },
                 { id: 'leaves', label: '請假管理', icon: 'ph-calendar-check' },
                 { id: 'students', label: '報名資料', icon: 'ph-users-three' },
+                { id: 'afternoon-loop', label: '下午環線', icon: 'ph-bus' },
+                { id: 'seating', label: '座位安排', icon: 'ph-grid-four' },
                 { id: 'settings', label: '系統設定', icon: 'ph-shield-check' }
             ];
 
@@ -2353,9 +2353,14 @@
                             {adminTab === 'routes' && '新增、隱藏、刪除路線，調整車站與人數上限。'}
                             {adminTab === 'leaves' && '查詢、修改或刪除家長送出的請假紀錄。'}
                             {adminTab === 'students' && '查看、篩選、匯出與編輯學生報名資料。'}
+                            {adminTab === 'afternoon-loop' && '建立固定下午環線名單，勾選學生後分配環線 A 車或 B 車。'}
+                            {adminTab === 'seating' && '安排各路線與下午環線 A、B 車的座位，並可匯出座位表。'}
                             {adminTab === 'settings' && '修改後台密碼、車長密碼，或執行危險操作。'}
                         </div>
                     </div>
+
+                    {adminTab === 'afternoon-loop' && <AfternoonLoopPage ctx={ctx} />}
+                    {adminTab === 'seating' && <SeatingPage ctx={ctx} />}
 
                     {/* 期程切換器 UI */}
                     <div className={`${adminTab === 'sessions' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-indigo-200 overflow-hidden`}>
@@ -3887,9 +3892,7 @@
                     case 'lookup': return <LookupPage ctx={ctx} />;
                     case 'leave': return <LeavePage ctx={ctx} />;
                     case 'rollcall': return <RollCallPage ctx={ctx} />;
-                    case 'afternoon-loop': return <AfternoonLoopPage ctx={ctx} />;
                     case 'admin': return <AdminPage ctx={ctx} />;
-                    case 'seating': return <SeatingPage ctx={ctx} />;
                     default: return <RegisterPage ctx={ctx} />;
                 }
             };
