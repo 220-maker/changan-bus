@@ -54,8 +54,28 @@
             '磚磘里', '東芳里', '南安里', '莿桐里',
             '萬壽里', '民權里', '富貴里', '永生里',
             '西安里', '成功里', '彰安里', '福安里',
-            '崙平里', '平和里', '西興里', '南瑤里', '西勢里'
+            '崙平里', '平和里', '西興里', '南瑤里', '南美里', '西勢里'
         ];
+        const DEFAULT_ADDRESS_REGIONS = [
+            { county: '彰化縣', district: '彰化市', villages: CHANGHUA_CITY_VILLAGES },
+            { county: '彰化縣', district: '和美鎮', villages: [] },
+            { county: '彰化縣', district: '花壇鄉', villages: [] }
+        ];
+        const normalizeAddressRegions = (regions) => {
+            if (!Array.isArray(regions) || regions.length === 0) return DEFAULT_ADDRESS_REGIONS;
+            return regions.map(region => ({
+                county: String(region?.county || '').trim(),
+                district: String(region?.district || '').trim(),
+                villages: Array.isArray(region?.villages) ? [...new Set(region.villages.map(v => String(v).trim()).filter(Boolean))] : []
+            })).filter(region => region.county && region.district);
+        };
+        const addressRegionsToText = (regions) => normalizeAddressRegions(regions)
+            .map(region => `${region.county}｜${region.district}｜${region.villages.join('、')}`)
+            .join('\n');
+        const addressRegionsFromText = (text) => String(text || '').split(/\n/).map(line => {
+            const parts = line.split(/[|｜]/).map(part => part.trim());
+            return { county: parts[0] || '', district: parts[1] || '', villages: (parts[2] || '').split(/[、,，]/).map(v => v.trim()).filter(Boolean) };
+        }).filter(region => region.county && region.district);
         const SCHOOL_DISTRICT_VILLAGE_NOTES = {
             '萬壽里': '學區範圍：1至7鄰，請在詳細地址填寫鄰別。',
             '民權里': '學區範圍：7鄰以後，請在詳細地址填寫鄰別。',
@@ -66,25 +86,31 @@
         const PRIORITY_BUS_VILLAGES = ['東芳里', '莿桐里', '磚磘里', '南安里'];
         const createAddressState = () => ({
             areaType: 'changhua',
+            county: '彰化縣',
+            district: '彰化市',
             village: '',
             detail: '',
             otherAddr: ''
         });
         const normalizeAddressState = (prefix, source = {}) => ({
             areaType: source[`${prefix}AreaType`] || (source[`${prefix}Village`] ? 'changhua' : 'changhua'),
+            county: source[`${prefix}County`] || '彰化縣',
+            district: source[`${prefix}District`] || '彰化市',
             village: source[`${prefix}Village`] || '',
             detail: source[`${prefix}Detail`] || '',
             otherAddr: source[`${prefix}OtherAddr`] || ''
         });
         const flattenAddressState = (prefix, address) => ({
             [`${prefix}AreaType`]: address.areaType,
+            [`${prefix}County`]: address.areaType === 'changhua' ? (address.county || '彰化縣') : '',
+            [`${prefix}District`]: address.areaType === 'changhua' ? (address.district || '彰化市') : '',
             [`${prefix}Village`]: address.areaType === 'changhua' ? address.village : '',
             [`${prefix}Detail`]: address.areaType === 'changhua' ? address.detail : '',
             [`${prefix}OtherAddr`]: address.areaType === 'other' ? address.otherAddr : ''
         });
         const composeAddressText = (address) => {
             if (address.areaType === 'changhua') {
-                return ['彰化縣彰化市', address.village, address.detail].filter(Boolean).join('');
+                return [address.county || '彰化縣', address.district || '彰化市', address.village, address.detail].filter(Boolean).join('');
             }
             return address.otherAddr || '';
         };
@@ -436,8 +462,12 @@
             );
         };
 
-        const AddressFields = ({ title, value, onChange, required = false, sameAsResidence = false, onSameAsResidenceChange }) => {
+        const AddressFields = ({ title, value, onChange, required = false, sameAsResidence = false, onSameAsResidenceChange, addressRegions = DEFAULT_ADDRESS_REGIONS }) => {
             const isChanghua = value.areaType !== 'other';
+            const regions = normalizeAddressRegions(addressRegions);
+            const counties = [...new Set(regions.map(region => region.county))];
+            const districts = regions.filter(region => region.county === (value.county || counties[0])).map(region => region.district);
+            const selectedRegion = regions.find(region => region.county === (value.county || counties[0]) && region.district === (value.district || districts[0]));
             return (
                 <div className="sm:col-span-2 rounded-lg border border-gray-100 bg-gray-50 p-3 space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -453,14 +483,26 @@
                         <>
                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                 <select value={value.areaType || 'changhua'} onChange={e => onChange({ ...createAddressState(), areaType: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white">
-                                    <option value="changhua">彰化市</option>
+                                    <option value="changhua">國內地址</option>
                                     <option value="other">其他縣市／鄉鎮</option>
                                 </select>
                                 {isChanghua && (
-                                    <select required={required} value={value.village || ''} onChange={e => onChange({ ...value, village: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white sm:col-span-2">
-                                        <option value="">請選擇學區里別</option>
-                                        {CHANGHUA_CITY_VILLAGES.map(village => <option key={village} value={village}>{village}</option>)}
-                                    </select>
+                                    <>
+                                        <select value={value.county || counties[0] || ''} onChange={e => { const county = e.target.value; const firstDistrict = regions.find(region => region.county === county)?.district || ''; onChange({ ...value, county, district: firstDistrict, village: '' }); }} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white">
+                                            {counties.map(county => <option key={county} value={county}>{county}</option>)}
+                                        </select>
+                                        <select value={value.district || districts[0] || ''} onChange={e => onChange({ ...value, district: e.target.value, village: '' })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white">
+                                            {districts.map(district => <option key={district} value={district}>{district}</option>)}
+                                        </select>
+                                        {selectedRegion?.villages?.length > 0 ? (
+                                            <select required={required} value={value.village || ''} onChange={e => onChange({ ...value, village: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white sm:col-span-2">
+                                                <option value="">請選擇里／村</option>
+                                                {selectedRegion.villages.map(village => <option key={village} value={village}>{village}</option>)}
+                                            </select>
+                                        ) : (
+                                            <input required={required} type="text" placeholder="請輸入里／村" value={value.village || ''} onChange={e => onChange({ ...value, village: e.target.value })} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white sm:col-span-2" />
+                                        )}
+                                    </>
                                 )}
                             </div>
                             {isChanghua ? (
@@ -678,12 +720,14 @@
                                             title="戶籍地址"
                                             value={formData.residenceAddress}
                                             required={true}
+                                            addressRegions={ctx.appConfig.addressRegions}
                                             onChange={residenceAddress => setFormData({...formData, residenceAddress})}
                                         />
                                         <AddressFields
                                             title="通訊／實際居住地址"
                                             value={formData.commAddress}
                                             sameAsResidence={formData.commSameAsResidence}
+                                            addressRegions={ctx.appConfig.addressRegions}
                                             onSameAsResidenceChange={commSameAsResidence => setFormData({...formData, commSameAsResidence})}
                                             required={!formData.commSameAsResidence}
                                             onChange={commAddress => setFormData({...formData, commAddress})}
@@ -1694,6 +1738,14 @@
                     await updateSystemConfig({ rollCallPasswordHash: newHash });
                     e.target.pwd.value = ''; ctx.showMessage('車長點名密碼已更新');
                 } else { ctx.showMessage('密碼太短', 'error'); }
+            };
+
+            const handleUpdateAddressRegions = async (e) => {
+                e.preventDefault();
+                const regions = addressRegionsFromText(e.target.addressRegions.value);
+                if (regions.length === 0) return ctx.showMessage('請至少保留一筆縣市／鄉鎮市區設定', 'error');
+                await updateSystemConfig({ addressRegions: regions });
+                ctx.showMessage('地址選項已更新；不會修改既有學生資料');
             };
 
             const sanitizeSurveyQuestions = (questions) => {
@@ -2838,6 +2890,14 @@
                                     <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition whitespace-nowrap">更新</button>
                                 </div>
                             </form>
+                            <form onSubmit={handleUpdateAddressRegions} className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+                                <div>
+                                    <label className="text-sm font-bold text-amber-900">縣市／鄉鎮市區／里村選項</label>
+                                    <p className="mt-1 text-xs leading-5 text-amber-800">每行一個區域，格式：縣市｜鄉鎮市區｜里或村（里村之間用「、」分隔）。例如：彰化縣｜和美鎮｜和東里、和西里。</p>
+                                </div>
+                                <textarea name="addressRegions" defaultValue={addressRegionsToText(ctx.appConfig.addressRegions)} rows="7" className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-amber-500" />
+                                <button type="submit" className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700">儲存地址選項</button>
+                            </form>
                         </div>
                     </div>
 
@@ -3024,12 +3084,14 @@
                                                 title="戶籍地址"
                                                 value={editFormData.residenceAddress || createAddressState()}
                                                 required={true}
+                                                addressRegions={ctx.appConfig.addressRegions}
                                                 onChange={residenceAddress => setEditFormData({...editFormData, residenceAddress})}
                                             />
                                             <AddressFields
                                                 title="通訊／實際居住地址"
                                                 value={editFormData.commAddress || createAddressState()}
                                                 sameAsResidence={editFormData.commSameAsResidence === true}
+                                                addressRegions={ctx.appConfig.addressRegions}
                                                 onSameAsResidenceChange={commSameAsResidence => setEditFormData({...editFormData, commSameAsResidence})}
                                                 required={editFormData.commSameAsResidence !== true}
                                                 onChange={commAddress => setEditFormData({...editFormData, commAddress})}
@@ -3643,7 +3705,7 @@
             const [attendanceRecords, setAttendanceRecords] = useState([]);
             const [afternoonLoopAssignments, setAfternoonLoopAssignments] = useState([]);
             const [seatingArrangements, setSeatingArrangements] = useState({});
-            const [appConfig, setAppConfig] = useState({ adminPasswordHash: '', rollCallPasswordHash: '', registrationNotice: DEFAULT_REGISTRATION_NOTICE, surveyQuestions: [], surveyQuestionsConfigured: true, surveyTitle: DEFAULT_SURVEY_TITLE, surveyDescription: DEFAULT_SURVEY_DESCRIPTION, surveyNoteLabel: DEFAULT_SURVEY_NOTE_LABEL, surveyNoteEnabled: true, returnOptions: DEFAULT_RETURN_OPTIONS, registrationClosed: false, registrationDeadline: '', rollCallClosed: false, rollCallStartDate: '', rollCallEndDate: '' });
+            const [appConfig, setAppConfig] = useState({ adminPasswordHash: '', rollCallPasswordHash: '', addressRegions: DEFAULT_ADDRESS_REGIONS, registrationNotice: DEFAULT_REGISTRATION_NOTICE, surveyQuestions: [], surveyQuestionsConfigured: true, surveyTitle: DEFAULT_SURVEY_TITLE, surveyDescription: DEFAULT_SURVEY_DESCRIPTION, surveyNoteLabel: DEFAULT_SURVEY_NOTE_LABEL, surveyNoteEnabled: true, returnOptions: DEFAULT_RETURN_OPTIONS, registrationClosed: false, registrationDeadline: '', rollCallClosed: false, rollCallStartDate: '', rollCallEndDate: '' });
 
             // 1. 初始化 Auth 與全域主控設定 (Master Config)
             useEffect(() => {
@@ -3756,6 +3818,7 @@
                 const baseAppConfig = {
                     adminPasswordHash: '',
                     rollCallPasswordHash: '',
+                    addressRegions: DEFAULT_ADDRESS_REGIONS,
                     registrationNotice: DEFAULT_REGISTRATION_NOTICE,
                     surveyQuestions: [],
                     surveyQuestionsConfigured: true,
@@ -3783,7 +3846,8 @@
                         const rawSystemConfig = docSnap.data();
                         systemConfigData = {
                             adminPasswordHash: rawSystemConfig.adminPasswordHash || '',
-                            rollCallPasswordHash: rawSystemConfig.rollCallPasswordHash || ''
+                            rollCallPasswordHash: rawSystemConfig.rollCallPasswordHash || '',
+                            addressRegions: normalizeAddressRegions(rawSystemConfig.addressRegions)
                         };
                         applyConfig();
                     } else {
