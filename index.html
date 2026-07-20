@@ -10,6 +10,7 @@
     <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
         body { font-family: 'Noto Sans TC', sans-serif; }
@@ -84,6 +85,9 @@
             '西興里': '學區範圍：1至16鄰，請在詳細地址填寫鄰別。'
         };
         const PRIORITY_BUS_VILLAGES = ['東芳里', '莿桐里', '磚磘里', '南安里'];
+        const normalizeMatchText = (value) => String(value || '').trim().replace(/\s+/g, '').replace(/[（）()－—–-]/g, '');
+        const normalizeAddressForCompare = (value) => PRIORITY_BUS_VILLAGES.reduce((text, village) => text.split(village).join(''), normalizeMatchText(value));
+        const getPriorityVillageFromAddress = (value) => PRIORITY_BUS_VILLAGES.find(village => String(value || '').includes(village)) || '';
         const createAddressState = () => ({
             areaType: 'changhua',
             county: '彰化縣',
@@ -188,7 +192,11 @@
                 description: q.description || '',
                 options: Array.isArray(q.options) && q.options.length > 0 ? q.options : ['是', '否'],
                 noteEnabled: q.noteEnabled !== false,
-                noteLabel: q.noteLabel || '備註（選填）'
+                noteLabel: q.noteLabel || '備註（選填）',
+                // 只有後台明確開啟的題目才會連動環線，絕不以題目文字猜測。
+                loopEnabled: q.loopEnabled === true,
+                loopServiceName: q.loopServiceName || '本期環線',
+                loopRequiredOption: q.loopRequiredOption || ''
             }));
         };
 
@@ -567,6 +575,10 @@
                 if (isRegistrationClosed) {
                     return ctx.showMessage('目前報名表已關閉，無法送出資料', 'error');
                 }
+                const normalizedClass = String(formData.class || '').trim();
+                if (!(normalizedClass === '新生' || /^[789]\d{2}$/.test(normalizedClass))) {
+                    return ctx.showMessage('班級請填 701、808、911 這類三碼格式；尚未編班的七年級請填「新生」', 'error');
+                }
 
                 const lookupKey = await buildLookupKey(formData.parentName, formData.parentMobile);
                 const identityData = { ...formData, lookupKey };
@@ -591,12 +603,6 @@
                     if (q.noteEnabled) surveyNotes[q.id] = formData.surveyNotes[q.id] || '';
                 });
                 const firstQuestion = surveyQuestions[0];
-                const residenceAddress = formData.residenceAddress || createAddressState();
-                const commAddress = formData.commSameAsResidence ? residenceAddress : (formData.commAddress || createAddressState());
-                const residenceAddr = composeAddressText(residenceAddress);
-                const commAddr = formData.commSameAsResidence ? residenceAddr : composeAddressText(commAddress);
-                const residenceEligibility = getAddressEligibility(residenceAddress);
-                const actualEligibility = getAddressEligibility(commAddress);
                 const originalCreatedAt = existingStudent?.createdAt || Number(existingStudent?.id) || now;
                 const publicData = {
                     id: targetId,
@@ -614,11 +620,8 @@
                     returnNote: firstQuestion ? (surveyNotes[firstQuestion.id] || '') : '',
                     noRide: formData.noRide,
                     lookupKey,
-                    residenceVillage: residenceAddress.areaType === 'changhua' ? residenceAddress.village : '',
-                    actualVillage: actualEligibility.village,
-                    actualEligibilityStatus: actualEligibility.status,
-                    busEligibilityStatus: residenceEligibility.status,
-                    isPriorityBusVillage: residenceEligibility.isPriorityVillage,
+                    busEligibilityStatus: '待學務資料比對',
+                    isPriorityBusVillage: false,
                     createdAt: originalCreatedAt,
                     submittedAt: now,
                     updatedAt: now
@@ -631,15 +634,6 @@
                     mobile: formData.mobile,
                     parentName: formData.parentName,
                     parentMobile: formData.parentMobile,
-                    residenceAddr,
-                    commAddr,
-                    ...flattenAddressState('residence', residenceAddress),
-                    commSameAsResidence: formData.commSameAsResidence,
-                    ...flattenAddressState('comm', commAddress),
-                    actualVillage: actualEligibility.village,
-                    actualEligibilityStatus: actualEligibility.status,
-                    busEligibilityStatus: residenceEligibility.status,
-                    isPriorityBusVillage: residenceEligibility.isPriorityVillage,
                     updatedAt: now
                 };
                 try {
@@ -705,7 +699,7 @@
                                 <div className="space-y-4 md:col-span-2">
                                     <h3 className="text-sm font-semibold text-indigo-600 border-l-4 border-indigo-600 pl-2">基本與聯絡資料</h3>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                        <div><label className="block text-xs text-gray-500 mb-1">班級</label><input required type="text" placeholder="如: 701" value={formData.class} onChange={e => setFormData({...formData, class: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
+                                        <div><label className="block text-xs text-gray-500 mb-1">班級</label><input required type="text" pattern="(?:[789][0-9]{2}|新生)" title="請填 701、808、911 這類三碼格式；尚未編班請填新生" placeholder="例如：701、808、911；未編班填新生" value={formData.class} onChange={e => setFormData({...formData, class: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /><p className="mt-1 text-[11px] leading-4 text-indigo-600">請使用七、八、九年級格式；七年級尚未編班請填「新生」。</p></div>
                                         <div className="grid grid-cols-2 gap-3">
                                             <div><label className="block text-xs text-gray-500 mb-1">學號</label><input required type="text" placeholder="學號" value={formData.sid} onChange={e => setFormData({...formData, sid: e.target.value})} className="w-full min-w-0 px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                             <div><label className="block text-xs text-gray-500 mb-1">座號</label><input required type="number" placeholder="座號" value={formData.seat} onChange={e => setFormData({...formData, seat: e.target.value})} className="w-full min-w-0 px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
@@ -716,22 +710,6 @@
                                         <div><label className="block text-xs text-gray-500 mb-1">監護人手機</label><input required type="text" value={formData.parentMobile} onChange={e => setFormData({...formData, parentMobile: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                         <div><label className="block text-xs text-gray-500 mb-1">學生本人手機 (選填)</label><input type="text" value={formData.mobile} onChange={e => setFormData({...formData, mobile: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                         <div><label className="block text-xs text-gray-500 mb-1">住家室內電話 (選填)</label><input type="text" value={formData.homePhone} onChange={e => setFormData({...formData, homePhone: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
-                                        <AddressFields
-                                            title="戶籍地址"
-                                            value={formData.residenceAddress}
-                                            required={true}
-                                            addressRegions={ctx.appConfig.addressRegions}
-                                            onChange={residenceAddress => setFormData({...formData, residenceAddress})}
-                                        />
-                                        <AddressFields
-                                            title="通訊／實際居住地址"
-                                            value={formData.commAddress}
-                                            sameAsResidence={formData.commSameAsResidence}
-                                            addressRegions={ctx.appConfig.addressRegions}
-                                            onSameAsResidenceChange={commSameAsResidence => setFormData({...formData, commSameAsResidence})}
-                                            required={!formData.commSameAsResidence}
-                                            onChange={commAddress => setFormData({...formData, commAddress})}
-                                        />
                                     </div>
                                 </div>
                                 <div className="space-y-4 md:col-span-2 pt-4 border-t border-gray-100">
@@ -1441,21 +1419,21 @@
             const [vehicleFilter, setVehicleFilter] = useState('all');
             const [selectedStudentIds, setSelectedStudentIds] = useState([]);
             const [batchNameText, setBatchNameText] = useState('');
+            const loopQuestions = useMemo(() => buildSurveyQuestions(ctx.appConfig)
+                .filter(question => question.loopEnabled === true && question.loopRequiredOption), [ctx.appConfig]);
             const recordsByStudentId = useMemo(() => {
                 const map = {};
                 (ctx.afternoonLoopAssignments || []).filter(r => r.scheduleType === 'fixed' && r.included !== false).forEach(r => { map[r.studentId] = r; });
                 return map;
             }, [ctx.afternoonLoopAssignments]);
 
-            const hasAfternoonNeed = (student) => {
-                const answers = Object.values(student.surveyAnswers || {});
-                const text = [...answers, student.returnBus || '', student.returnNote || ''].join(' ');
-                return /下午|營隊|活動/.test(text) && /安排|加開|搭車|接送/.test(text) && !/不搭放學車/.test(text);
-            };
+            const getLoopRequests = (student) => loopQuestions.filter(question =>
+                (student.surveyAnswers?.[question.id] || '') === question.loopRequiredOption
+            );
             const candidates = useMemo(() => ctx.studentsPublic
-                .filter(student => showAllStudents || hasAfternoonNeed(student) || recordsByStudentId[student.id])
+                .filter(student => showAllStudents || getLoopRequests(student).length > 0 || recordsByStudentId[student.id])
                 .sort((a, b) => (a.class || '').localeCompare(b.class || '') || (a.seat || '').localeCompare(b.seat || '') || (a.name || '').localeCompare(b.name || '')),
-                [ctx.studentsPublic, showAllStudents, recordsByStudentId]);
+                [ctx.studentsPublic, showAllStudents, recordsByStudentId, loopQuestions]);
             const assigned = candidates.filter(student => recordsByStudentId[student.id])
                 .filter(student => vehicleFilter === 'all' || recordsByStudentId[student.id]?.vehicle === vehicleFilter);
             const selectableStudents = candidates.filter(student => !recordsByStudentId[student.id]);
@@ -1467,6 +1445,7 @@
             const saveAssignment = async (student, changes = {}) => {
                 if (!ctx.user) return;
                 const existing = recordsByStudentId[student.id] || {};
+                const loopRequest = getLoopRequests(student)[0];
                 const assignment = {
                     id: `fixed_${student.id}`,
                     scheduleType: 'fixed',
@@ -1481,7 +1460,9 @@
                     vehicle: '待調度',
                     stopName: student.stopName || '',
                     note: '',
-                    source: 'afternoon-loop',
+                    source: 'loop',
+                    loopQuestionId: loopRequest?.id || '',
+                    loopServiceName: loopRequest?.loopServiceName || '手動加入環線',
                     ...existing,
                     ...changes,
                     updatedAt: Date.now()
@@ -1490,7 +1471,7 @@
                     await setDoc(ctx.getDocRef('afternoonLoopAssignments', assignment.id), assignment);
                 } catch (err) {
                     console.error(err);
-                    ctx.showMessage('下午環線調度儲存失敗，請檢查網路或 Firebase 權限', 'error');
+                    ctx.showMessage('環線調度儲存失敗，請檢查網路或 Firebase 權限', 'error');
                 }
             };
 
@@ -1501,20 +1482,20 @@
                     await deleteDoc(ctx.getDocRef('afternoonLoopAssignments', record.id));
                 } catch (err) {
                     console.error(err);
-                    ctx.showMessage('移出下午環線失敗，請檢查網路或 Firebase 權限', 'error');
+                    ctx.showMessage('移出環線失敗，請檢查網路或 Firebase 權限', 'error');
                 }
             };
 
             const assignSelectedStudents = (vehicle) => {
                 const selected = selectableStudents.filter(student => selectedStudentIds.includes(student.id));
                 if (!selected.length) return ctx.showMessage('請先勾選要安排的學生');
-                ctx.showConfirm(`確定將已勾選的 ${selected.length} 位學生固定安排到${vehicle}嗎？這只會建立下午環線資料，不會修改學生報名、原本路線或座位。`, async () => {
+                ctx.showConfirm(`確定將已勾選的 ${selected.length} 位學生固定安排到${vehicle}嗎？這只會建立環線資料，不會修改學生報名、原本路線或座位。`, async () => {
                     try {
                         await Promise.all(selected.map(student => saveAssignment(student, { vehicle })));
                         setSelectedStudentIds([]);
                         ctx.showMessage(`已將 ${selected.length} 位學生固定安排到${vehicle}`);
                     } catch (err) {
-                        ctx.showMessage('部分下午環線調度儲存失敗', 'error');
+                        ctx.showMessage('部分環線調度儲存失敗', 'error');
                     }
                 });
             };
@@ -1537,8 +1518,8 @@
                     <div className="rounded-xl border border-indigo-100 bg-white p-5 shadow-md">
                         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                             <div>
-                                <h2 className="flex items-center text-xl font-black text-gray-900"><i className="ph-fill ph-bus mr-2 text-indigo-600"></i>下午環線調度</h2>
-                                <p className="mt-2 text-sm leading-6 text-gray-600">這是固定的下午環線名單；不會改學生原本報名路線、戶籍資料、車站或已安排座位。</p>
+                                <h2 className="flex items-center text-xl font-black text-gray-900"><i className="ph-fill ph-bus mr-2 text-indigo-600"></i>環線調度</h2>
+                                <p className="mt-2 text-sm leading-6 text-gray-600">候選名單只讀取本期後台已設定「連動環線」題目的指定答案；不會改學生原本報名路線、戶籍資料、車站或已安排座位。</p>
                             </div>
                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                                 <div><label className="mb-1 block text-xs font-bold text-gray-500">車輛篩選</label><select value={vehicleFilter} onChange={e => setVehicleFilter(e.target.value)} className="w-full rounded-lg border bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-400"><option value="all">全部車輛</option><option value="環線 A車">環線 A車</option><option value="環線 B車">環線 B車</option><option value="待調度">待調度</option></select></div>
@@ -1547,10 +1528,15 @@
                             </div>
                         </div>
                         <div className="mt-4 flex flex-wrap gap-2 text-xs font-bold">
-                            <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-indigo-700">固定下午環線</span>
+                            <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-indigo-700">本期環線</span>
                             <span className="rounded-full bg-blue-50 px-3 py-1.5 text-blue-700">A車 {countByVehicle['環線 A車']} 人</span>
                             <span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-700">B車 {countByVehicle['環線 B車']} 人</span>
                             <span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-700">待調度 {countByVehicle['待調度']} 人</span>
+                        </div>
+                        <div className="mt-3 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
+                            {loopQuestions.length > 0
+                                ? <>本期已連動：{loopQuestions.map(question => `${question.loopServiceName}（${question.title}）`).join('、')}。只有選到指定的「需要搭乘」答案才會自動列入候選。</>
+                                : <>本期尚未設定連動環線題目，因此不會自動帶入任何學生；仍可使用右側「手動加入其他學生」。</>}
                         </div>
                     </div>
 
@@ -1558,21 +1544,21 @@
                         <div className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-md">
                             <div className="flex flex-col gap-2 border-b bg-gray-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
                                 <div><h3 className="font-black text-gray-900">已安排學生 <span className="text-indigo-600">{assigned.length} 人</span></h3><p className="mt-1 text-xs text-gray-500">可直接調整環線車次、下車站與固定備註。</p></div>
-                                <button onClick={() => setShowAllStudents(!showAllStudents)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100">{showAllStudents ? '只看下午候選' : '手動加入其他學生'}</button>
+                                <button onClick={() => setShowAllStudents(!showAllStudents)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100">{showAllStudents ? '只看環線候選' : '手動加入其他學生'}</button>
                             </div>
-                            {assigned.length === 0 ? <div className="p-10 text-center text-sm text-gray-500">尚未建立固定下午環線名單。請在右側勾選學生後，指定排入 A 車或 B 車。</div> : (
-                                <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="border-b bg-white text-left text-xs text-gray-500"><tr><th className="px-4 py-3">學生</th><th className="px-4 py-3">原報名路線／站點</th><th className="px-4 py-3">環線車次</th><th className="px-4 py-3">下車站</th><th className="px-4 py-3">當日備註</th><th className="px-4 py-3"></th></tr></thead><tbody className="divide-y">{assigned.map(student => { const record = recordsByStudentId[student.id]; return <tr key={student.id} className="align-top"><td className="px-4 py-3 font-bold text-gray-900">{student.name}<div className="mt-1 text-xs font-normal text-gray-500">{student.class || '未填班級'} 班 {student.seat || '—'} 號</div></td><td className="px-4 py-3 text-xs text-gray-600">{record.originalRouteName || '未填路線'}<div className="mt-1">{record.originalStopName || '未填站點'}</div></td><td className="px-4 py-3"><select value={record.vehicle || '待調度'} onChange={e => saveAssignment(student, { vehicle: e.target.value })} className="rounded-lg border bg-white px-2 py-2 text-xs font-bold"><option value="待調度">待調度</option><option value="環線 A車">環線 A車</option><option value="環線 B車">環線 B車</option></select></td><td className="px-4 py-3"><input value={record.stopName || ''} onChange={e => saveAssignment(student, { stopName: e.target.value })} placeholder="下車站" className="w-32 rounded-lg border px-2 py-2 text-xs" /></td><td className="px-4 py-3"><input value={record.note || ''} onChange={e => saveAssignment(student, { note: e.target.value })} placeholder="例如：16:05 搭車" className="w-40 rounded-lg border px-2 py-2 text-xs" /></td><td className="px-4 py-3"><button onClick={() => removeAssignment(student)} className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 hover:bg-red-100" title="移出下午環線"><i className="ph-bold ph-x"></i></button></td></tr>; })}</tbody></table></div>
+                            {assigned.length === 0 ? <div className="p-10 text-center text-sm text-gray-500">尚未建立環線名單。請在右側勾選學生後，指定排入 A 車或 B 車。</div> : (
+                            <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="border-b bg-white text-left text-xs text-gray-500"><tr><th className="px-4 py-3">學生</th><th className="px-4 py-3">原報名路線／站點</th><th className="px-4 py-3">環線車次</th><th className="px-4 py-3">下車站</th><th className="px-4 py-3">當日備註</th><th className="px-4 py-3"></th></tr></thead><tbody className="divide-y">{assigned.map(student => { const record = recordsByStudentId[student.id]; return <tr key={student.id} className="align-top"><td className="px-4 py-3 font-bold text-gray-900">{student.name}<div className="mt-1 text-xs font-normal text-gray-500">{student.class || '未填班級'} 班 {student.seat || '—'} 號</div></td><td className="px-4 py-3 text-xs text-gray-600">{record.originalRouteName || '未填路線'}<div className="mt-1">{record.originalStopName || '未填站點'}</div></td><td className="px-4 py-3"><select value={record.vehicle || '待調度'} onChange={e => saveAssignment(student, { vehicle: e.target.value })} className="rounded-lg border bg-white px-2 py-2 text-xs font-bold"><option value="待調度">待調度</option><option value="環線 A車">環線 A車</option><option value="環線 B車">環線 B車</option></select></td><td className="px-4 py-3"><input value={record.stopName || ''} onChange={e => saveAssignment(student, { stopName: e.target.value })} placeholder="下車站" className="w-32 rounded-lg border px-2 py-2 text-xs" /></td><td className="px-4 py-3"><input value={record.note || ''} onChange={e => saveAssignment(student, { note: e.target.value })} placeholder="例如：16:05 搭車" className="w-40 rounded-lg border px-2 py-2 text-xs" /></td><td className="px-4 py-3"><button onClick={() => removeAssignment(student)} className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 hover:bg-red-100" title="移出環線"><i className="ph-bold ph-x"></i></button></td></tr>; })}</tbody></table></div>
                             )}
                         </div>
 
                         <aside className="rounded-xl border border-amber-100 bg-white p-5 shadow-md">
-                            <h3 className="flex items-center font-black text-amber-900"><i className="ph-fill ph-list-checks mr-2 text-lg"></i>選擇下午環線學生</h3>
+                            <h3 className="flex items-center font-black text-amber-900"><i className="ph-fill ph-list-checks mr-2 text-lg"></i>選擇環線學生</h3>
                             <p className="mt-2 text-xs leading-5 text-gray-500">可貼上多位姓名自動對照，也可手動勾選、全選或全部取消，再一次指定 A 車或 B 車。</p>
                             <textarea value={batchNameText} onChange={e => setBatchNameText(e.target.value)} rows="4" placeholder="每行一位學生姓名，可直接貼上名單" className="mt-3 w-full rounded-lg border p-2 text-xs outline-none focus:ring-2 focus:ring-indigo-400" />
                             <button onClick={selectBatchNames} className="mt-2 w-full rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100">對照名單並勾選</button>
                             <div className="mt-3 flex gap-2"><button onClick={selectAll} className="flex-1 rounded-lg border border-gray-200 bg-white px-2 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100">全選</button><button onClick={() => setSelectedStudentIds([])} className="flex-1 rounded-lg border border-gray-200 bg-white px-2 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100">全部取消</button></div>
                             <div className="mt-3 text-xs font-bold text-indigo-700">已勾選 {selectedStudentIds.length} 人</div>
-                            <div className="mt-3 max-h-[26rem] space-y-2 overflow-y-auto pr-1">{selectableStudents.map(student => { const candidate = hasAfternoonNeed(student); const checked = selectedStudentIds.includes(student.id); return <label key={student.id} className={`flex cursor-pointer items-start gap-2 rounded-lg border p-3 ${candidate ? 'border-amber-100 bg-amber-50/50' : 'border-gray-200 bg-gray-50'}`}><input type="checkbox" checked={checked} onChange={() => toggleStudent(student.id)} className="mt-1 h-4 w-4 accent-indigo-600" /><span><span className="font-bold text-gray-900">{student.name}</span><span className="mt-1 block text-[11px] text-gray-500">{student.class || '未填班級'} 班 {student.seat || '—'} 號｜{ctx.routes.find(r => r.id === student.routeId)?.name || '未填路線'}</span><span className="mt-1 block text-[11px] text-gray-500">原站：{student.stopName || '未填站點'}</span>{candidate && student.returnNote && <span className="mt-1 block text-[11px] text-amber-800">備註：{student.returnNote}</span>}</span></label>; })}{selectableStudents.length === 0 && <div className="py-8 text-center text-sm text-gray-500">目前沒有可選擇的學生</div>}</div>
+                            <div className="mt-3 max-h-[26rem] space-y-2 overflow-y-auto pr-1">{selectableStudents.map(student => { const requests = getLoopRequests(student); const candidate = requests.length > 0; const checked = selectedStudentIds.includes(student.id); return <label key={student.id} className={`flex cursor-pointer items-start gap-2 rounded-lg border p-3 ${candidate ? 'border-amber-100 bg-amber-50/50' : 'border-gray-200 bg-gray-50'}`}><input type="checkbox" checked={checked} onChange={() => toggleStudent(student.id)} className="mt-1 h-4 w-4 accent-indigo-600" /><span><span className="font-bold text-gray-900">{student.name}</span><span className="mt-1 block text-[11px] text-gray-500">{student.class || '未填班級'} 班 {student.seat || '—'} 號｜{ctx.routes.find(r => r.id === student.routeId)?.name || '未填路線'}</span><span className="mt-1 block text-[11px] text-gray-500">原站：{student.stopName || '未填站點'}</span>{candidate && <span className="mt-1 block text-[11px] text-amber-800">環線需求：{requests.map(question => question.loopServiceName).join('、')}</span>}</span></label>; })}{selectableStudents.length === 0 && <div className="py-8 text-center text-sm text-gray-500">目前沒有可選擇的學生</div>}</div>
                         </aside>
                     </div>
                 </div>
@@ -1594,6 +1580,10 @@
             const [restoreFile, setRestoreFile] = useState(null);
             const [restoreBusy, setRestoreBusy] = useState(false);
             const [restoreInputKey, setRestoreInputKey] = useState(0);
+            const [eligibilityExcelFile, setEligibilityExcelFile] = useState(null);
+            const [eligibilityLabBusy, setEligibilityLabBusy] = useState(false);
+            const [eligibilityReport, setEligibilityReport] = useState(null);
+            const [eligibilityStatusFilter, setEligibilityStatusFilter] = useState('全部');
             const editDays = [{ val: 1, label: '週一' }, { val: 2, label: '週二' }, { val: 3, label: '週三' }, { val: 4, label: '週四' }, { val: 5, label: '週五' }];
             const editShifts = [{ key: 'morning', label: '上學' }, { key: 'afternoon', label: '放學' }];
 
@@ -1609,6 +1599,12 @@
                 const sessions = ctx.masterConfig?.sessions || [];
                 return sessions.find(s => s.id === ctx.masterConfig?.activeSessionId)?.name || ctx.masterConfig?.activeSessionId || '未命名期程';
             }, [ctx.masterConfig]);
+            const visibleEligibilityResults = useMemo(() => {
+                if (!eligibilityReport) return [];
+                return eligibilityStatusFilter === '全部'
+                    ? eligibilityReport.results
+                    : eligibilityReport.results.filter(row => row.status === eligibilityStatusFilter);
+            }, [eligibilityReport, eligibilityStatusFilter]);
 
             const adminTabs = [
                 { id: 'dashboard', label: '總覽', icon: 'ph-chart-line-up' },
@@ -1616,8 +1612,9 @@
                 { id: 'routes', label: '路線與站點', icon: 'ph-map-trifold' },
                 { id: 'leaves', label: '請假管理', icon: 'ph-calendar-check' },
                 { id: 'students', label: '報名資料', icon: 'ph-users-three' },
-                { id: 'afternoon-loop', label: '下午環線', icon: 'ph-bus' },
+                { id: 'afternoon-loop', label: '環線', icon: 'ph-bus' },
                 { id: 'seating', label: '座位安排', icon: 'ph-grid-four' },
+                { id: 'eligibility-lab', label: '報名資格比對', icon: 'ph-test-tube' },
                 { id: 'settings', label: '系統設定', icon: 'ph-shield-check' }
             ];
 
@@ -1647,6 +1644,89 @@
                     ...updates,
                     sessionId: ctx.masterConfig.activeSessionId
                 });
+            };
+
+            const runEligibilityLab = async () => {
+                if (!eligibilityExcelFile) {
+                    ctx.showMessage('請先選擇學務系統 Excel', 'error');
+                    return;
+                }
+                if (!window.XLSX) {
+                    ctx.showMessage('Excel 讀取工具尚未載入，請重新整理後再試', 'error');
+                    return;
+                }
+                setEligibilityLabBusy(true);
+                try {
+                    if (!ctx.students.length) throw new Error('目前線上期程沒有可比對的報名資料');
+
+                    const workbook = window.XLSX.read(await eligibilityExcelFile.arrayBuffer(), { type: 'array' });
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const rosterRows = window.XLSX.utils.sheet_to_json(firstSheet, { defval: '', raw: false });
+                    const requiredHeaders = ['姓名', '父親姓名', '母親姓名', '父_行動電話', '母_行動電話', '戶籍地址', '居住地址'];
+                    const missingHeaders = requiredHeaders.filter(header => !Object.prototype.hasOwnProperty.call(rosterRows[0] || {}, header));
+                    if (missingHeaders.length) throw new Error(`Excel 缺少欄位：${missingHeaders.join('、')}`);
+
+                    const roster = rosterRows.map((row, index) => ({
+                        index: index + 2,
+                        name: row['姓名'],
+                        fatherName: row['父親姓名'], fatherMobile: row['父_行動電話'],
+                        motherName: row['母親姓名'], motherMobile: row['母_行動電話'],
+                        residenceAddr: row['戶籍地址'], commAddr: row['居住地址']
+                    }));
+                    const results = ctx.students.map(student => {
+                        const studentName = student.name || '';
+                        const parentName = student.parentName || '';
+                        const parentMobile = student.parentMobile || '';
+                        const sameName = roster.filter(row => normalizeMatchText(row.name) === normalizeMatchText(studentName));
+                        const matchedRows = sameName.filter(row => [
+                            [row.fatherName, row.fatherMobile],
+                            [row.motherName, row.motherMobile]
+                        ].some(([name, mobile]) => normalizeMatchText(name) === normalizeMatchText(parentName) && normalizePhone(mobile) === normalizePhone(parentMobile) && normalizePhone(mobile)));
+                        const route = ctx.routes.find(item => item.id === student.routeId) || {};
+                        const base = {
+                            studentId: student.id,
+                            name: studentName,
+                            class: student.class || '',
+                            seat: student.seat || '',
+                            routeName: route.name || student.routeId || '未填路線',
+                            stopName: student.stopName || '未填車站',
+                            noRideText: formatNoRide(student.noRide),
+                            matchedCount: matchedRows.length,
+                            rosterRow: matchedRows[0]?.index || null,
+                            residenceAddr: matchedRows[0]?.residenceAddr || '',
+                            commAddr: matchedRows[0]?.commAddr || ''
+                        };
+                        if (matchedRows.length === 0) return { ...base, status: '學務資料未比對', note: sameName.length ? '姓名相同，但監護人姓名或手機未完全對上' : 'Excel 找不到同名學生' };
+                        if (matchedRows.length > 1) return { ...base, status: '資料重複待人工確認', note: `Excel 有 ${matchedRows.length} 筆同時符合姓名與監護人資料` };
+
+                        const matched = matchedRows[0];
+                        const residenceVillage = getPriorityVillageFromAddress(matched.residenceAddr);
+                        const commVillage = getPriorityVillageFromAddress(matched.commAddr);
+                        const hasVillage = /[\u4e00-\u9fff]{1,5}里/.test(`${matched.residenceAddr || ''}${matched.commAddr || ''}`);
+                        if (residenceVillage || commVillage) {
+                            const sources = [residenceVillage && `戶籍地址：${residenceVillage}`, commVillage && `通訊地址：${commVillage}`].filter(Boolean).join('；');
+                            return { ...base, status: '已確認符合', note: `${sources}，符合指定搭車里` };
+                        }
+                        if (hasVillage) return { ...base, status: '不符合指定里', note: '戶籍或通訊地址已標示里別，但皆不在指定搭車里' };
+                        return { ...base, status: '地址待判讀', note: '戶籍與通訊地址皆未含可判定的指定里別' };
+                    });
+                    const summary = results.reduce((counts, row) => ({ ...counts, [row.status]: (counts[row.status] || 0) + 1 }), {});
+                    setEligibilityReport({
+                        backupSessionName: currentSessionName,
+                        backupStudentCount: ctx.students.length,
+                        rosterCount: roster.length,
+                        summary,
+                        results,
+                        generatedAt: new Date().toLocaleString('zh-TW')
+                    });
+                    setEligibilityStatusFilter('全部');
+                    ctx.showMessage('線上報名資料比對已完成；結果只保留在目前瀏覽器，未寫入 Firebase');
+                } catch (err) {
+                    console.error(err);
+                    ctx.showMessage(`資格比對實驗失敗：${err.message || '請確認檔案格式'}`, 'error');
+                } finally {
+                    setEligibilityLabBusy(false);
+                }
             };
 
             const normalizeStops = (text) => text
@@ -1749,14 +1829,21 @@
             };
 
             const sanitizeSurveyQuestions = (questions) => {
-                return questions.map((q, idx) => ({
-                    ...q,
-                    id: q.id || `question-${Date.now()}-${idx}`,
-                    title: q.title.trim(),
-                    description: q.description.trim(),
-                    noteLabel: q.noteLabel.trim() || '備註（選填）',
-                    options: q.options.map(o => o.trim()).filter(Boolean)
-                })).filter(q => q.title && q.options.length > 0);
+                return questions.map((q, idx) => {
+                    const options = q.options.map(o => o.trim()).filter(Boolean);
+                    const loopRequiredOption = options.includes(q.loopRequiredOption) ? q.loopRequiredOption : options[0] || '';
+                    return {
+                        ...q,
+                        id: q.id || `question-${Date.now()}-${idx}`,
+                        title: q.title.trim(),
+                        description: q.description.trim(),
+                        noteLabel: q.noteLabel.trim() || '備註（選填）',
+                        options,
+                        loopEnabled: q.loopEnabled === true,
+                        loopServiceName: q.loopServiceName?.trim() || '本期環線',
+                        loopRequiredOption
+                    };
+                }).filter(q => q.title && q.options.length > 0);
             };
 
             const handleUpdateRegistrationText = async (e) => {
@@ -1801,7 +1888,10 @@
                     description: '',
                     options: ['選項一', '選項二'],
                     noteEnabled: false,
-                    noteLabel: '備註（選填）'
+                    noteLabel: '備註（選填）',
+                    loopEnabled: false,
+                    loopServiceName: '本期環線',
+                    loopRequiredOption: '選項一'
                 }]);
             };
 
@@ -2405,14 +2495,43 @@
                             {adminTab === 'routes' && '新增、隱藏、刪除路線，調整車站與人數上限。'}
                             {adminTab === 'leaves' && '查詢、修改或刪除家長送出的請假紀錄。'}
                             {adminTab === 'students' && '查看、篩選、匯出與編輯學生報名資料。'}
-                            {adminTab === 'afternoon-loop' && '建立固定下午環線名單，勾選學生後分配環線 A 車或 B 車。'}
-                            {adminTab === 'seating' && '安排各路線與下午環線 A、B 車的座位，並可匯出座位表。'}
+                            {adminTab === 'afternoon-loop' && '依本期連動題目建立環線候選名單，再分配環線 A 車或 B 車。'}
+                            {adminTab === 'seating' && '安排各路線與環線 A、B 車的座位，並可匯出座位表。'}
+                            {adminTab === 'eligibility-lab' && '以目前線上報名資料與本機 Excel 進行資格比對；不會寫入 Firebase。'}
                             {adminTab === 'settings' && '修改後台密碼、車長密碼，或執行危險操作。'}
                         </div>
                     </div>
 
                     {adminTab === 'afternoon-loop' && <AfternoonLoopPage ctx={ctx} />}
                     {adminTab === 'seating' && <SeatingPage ctx={ctx} />}
+
+                    {adminTab === 'eligibility-lab' && (
+                        <div className="space-y-6">
+                            <div className="overflow-hidden rounded-xl border border-violet-200 bg-white shadow-md">
+                                <div className="border-b border-violet-100 bg-violet-50 p-4 font-bold text-violet-800"><i className="ph-fill ph-test-tube mr-2 text-xl"></i>線上報名資料與 Excel 資格比對（只讀預覽）</div>
+                                <div className="space-y-5 p-6">
+                                    <p className="text-sm leading-6 text-gray-600">系統會直接讀取目前線上期程的報名資料，再與這台電腦選擇的學務系統 Excel 比對。Excel 不會上傳、不會還原，也不會修改學生、路線或座位。</p>
+                                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                                        <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 text-sm"><p className="font-bold text-indigo-900">1. 線上報名資料</p><p className="mt-2 text-indigo-800">目前期程：{currentSessionName}</p><p className="mt-1 text-xs text-indigo-700">已讀取 {ctx.students.length} 筆線上報名資料</p></div>
+                                        <label className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm font-bold text-gray-700">2. 學務系統 Excel<input type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={e => { setEligibilityExcelFile(e.target.files?.[0] || null); setEligibilityReport(null); }} className="mt-2 block w-full text-xs font-normal" />{eligibilityExcelFile && <span className="mt-2 block text-xs font-bold text-emerald-700">已選擇：{eligibilityExcelFile.name}</span>}</label>
+                                    </div>
+                                    <button type="button" onClick={runEligibilityLab} disabled={!eligibilityExcelFile || eligibilityLabBusy} className="rounded-lg bg-violet-600 px-5 py-3 font-bold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-gray-300"><i className="ph-bold ph-play mr-2"></i>{eligibilityLabBusy ? '正在比對…' : '開始比對線上報名資料'}</button>
+                                </div>
+                            </div>
+                            {eligibilityReport && (
+                                <>
+                                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                                        <div className="rounded-xl border border-indigo-100 bg-white p-4"><p className="text-xs font-bold text-gray-500">測試期程</p><p className="mt-1 font-bold text-indigo-800">{eligibilityReport.backupSessionName}</p></div>
+                                        <div className="rounded-xl border border-indigo-100 bg-white p-4"><p className="text-xs font-bold text-gray-500">暑期報名資料</p><p className="mt-1 text-2xl font-black text-indigo-800">{eligibilityReport.backupStudentCount}</p></div>
+                                        <div className="rounded-xl border border-indigo-100 bg-white p-4"><p className="text-xs font-bold text-gray-500">Excel 名冊</p><p className="mt-1 text-2xl font-black text-indigo-800">{eligibilityReport.rosterCount}</p></div>
+                                        <div className="rounded-xl border border-indigo-100 bg-white p-4"><p className="text-xs font-bold text-gray-500">產生時間</p><p className="mt-1 text-sm font-bold text-indigo-800">{eligibilityReport.generatedAt}</p></div>
+                                    </div>
+                                    <div className="space-y-3"><p className="text-sm font-bold text-gray-700">點選分類可只看該類學生</p><div className="flex flex-wrap gap-2"><button type="button" onClick={() => setEligibilityStatusFilter('全部')} className={`rounded-full px-3 py-1.5 text-sm font-bold transition ${eligibilityStatusFilter === '全部' ? 'bg-violet-700 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>全部 {eligibilityReport.results.length} 人</button>{Object.entries(eligibilityReport.summary).map(([status, count]) => <button type="button" key={status} onClick={() => setEligibilityStatusFilter(status)} className={`rounded-full px-3 py-1.5 text-sm font-bold transition ${eligibilityStatusFilter === status ? 'bg-violet-700 text-white shadow-sm' : 'bg-violet-100 text-violet-800 hover:bg-violet-200'}`}>{status} {count} 人</button>)}</div></div>
+                                    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-md"><div className="flex flex-wrap items-center justify-between gap-2 border-b bg-gray-50 p-4 font-bold text-gray-800"><span>比對明細（僅本機顯示）</span><span className="text-sm text-violet-700">{eligibilityStatusFilter}：{visibleEligibilityResults.length} 人</span></div><div className="max-h-[36rem] overflow-auto"><table className="min-w-[980px] w-full text-left text-sm"><thead className="sticky top-0 bg-white text-xs text-gray-500 shadow-sm"><tr><th className="px-4 py-3">學生</th><th className="px-4 py-3">暑期路線／車站</th><th className="px-4 py-3">固定不搭車</th><th className="px-4 py-3">比對結果</th><th className="px-4 py-3">判定說明</th></tr></thead><tbody className="divide-y">{visibleEligibilityResults.map(row => <tr key={row.studentId}><td className="px-4 py-3 font-bold text-gray-900">{row.name}<div className="mt-1 text-xs font-normal text-gray-500">{row.class || '未填班級'} 班 {row.seat || '未填座號'} 號</div></td><td className="px-4 py-3">{row.routeName}<div className="mt-1 text-xs text-gray-500">{row.stopName}</div></td><td className="px-4 py-3 text-xs">{row.noRideText}</td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-bold ${row.status === '已確認符合' ? 'bg-emerald-100 text-emerald-700' : row.status === '不符合指定里' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'}`}>{row.status}</span></td><td className="px-4 py-3 text-xs text-gray-600">{row.note}<div className="mt-1 text-gray-400">Excel 第 {row.rosterRow || '—'} 列</div></td></tr>)}{visibleEligibilityResults.length === 0 && <tr><td colSpan="5" className="px-4 py-10 text-center text-sm text-gray-500">此分類目前沒有學生</td></tr>}</tbody></table></div></div>
+                                </>
+                            )}
+                        </div>
+                    )}
 
                     {/* 期程切換器 UI */}
                     <div className={`${adminTab === 'sessions' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-indigo-200 overflow-hidden`}>
@@ -2531,6 +2650,27 @@
                                                 <label className="block text-xs font-bold text-gray-500 mb-1">備註欄標題</label>
                                                 <input value={q.noteLabel} onChange={e => updateSurveyDraft(q.id, { noteLabel: e.target.value })} className="w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
                                             </div>
+                                        </div>
+                                        <div className="rounded-lg border border-violet-200 bg-violet-50 p-3">
+                                            <label className="flex items-center gap-2 text-sm font-bold text-violet-900">
+                                                <input type="checkbox" checked={q.loopEnabled === true} onChange={e => updateSurveyDraft(q.id, { loopEnabled: e.target.checked })} className="h-4 w-4 accent-violet-600" />
+                                                此題連動環線名單
+                                            </label>
+                                            <p className="mt-1 text-xs leading-5 text-violet-800">學生端只會看到題目與選項；勾選後，只有下方指定的答案才會自動出現在後台「環線」候選名單。</p>
+                                            {q.loopEnabled === true && (
+                                                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-violet-800 mb-1">環線服務名稱</label>
+                                                        <input value={q.loopServiceName || ''} onChange={e => updateSurveyDraft(q.id, { loopServiceName: e.target.value })} placeholder="例如：寒輔下午環線、17:30 晚返環線" className="w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-violet-500 outline-none" />
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-violet-800 mb-1">視為「需要搭乘」的選項</label>
+                                                        <select value={q.loopRequiredOption || q.options[0] || ''} onChange={e => updateSurveyDraft(q.id, { loopRequiredOption: e.target.value })} className="w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                                                            {q.options.filter(option => option.trim()).map(option => <option key={option} value={option}>{option}</option>)}
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 ))}
@@ -3118,8 +3258,8 @@
             const [privacyMode, setPrivacyMode] = useState(false);
 
             const afternoonVehicles = [
-                { id: 'afternoon-loop-a', name: '下午環線 A車', capacity: 43, stops: [] },
-                { id: 'afternoon-loop-b', name: '下午環線 B車', capacity: 43, stops: [] }
+                { id: 'afternoon-loop-a', name: '環線 A車', capacity: 43, stops: [] },
+                { id: 'afternoon-loop-b', name: '環線 B車', capacity: 43, stops: [] }
             ];
             const seatingVehicles = [...ctx.activeRoutes, ...afternoonVehicles];
             const isAfternoonVehicle = routeId === 'afternoon-loop-a' || routeId === 'afternoon-loop-b';
@@ -3166,7 +3306,7 @@
                 return (parseInt(a.seat) || 999) - (parseInt(b.seat) || 999);
             });
             const studentPoolRoutes = isAfternoonVehicle
-                ? [{ id: 'current', name: '本下午環線未排' }]
+                ? [{ id: 'current', name: '本環線未排' }]
                 : [{ id: 'all', name: '全部路線未排（跨線用）' }, { id: 'current', name: '本車路線未排' }, ...ctx.activeRoutes.map(r => ({ id: r.id, name: `${r.name}未排` }))];
             const getPoolStudents = () => {
                 const base = isAfternoonVehicle
@@ -3204,7 +3344,7 @@
 
             const handleAutoAssign = () => {
                 if (!routeId) return;
-                ctx.showConfirm(`自動排座會保留目前已安排座位，只排還沒入座的${isAfternoonVehicle ? '本下午環線學生' : '本路線學生'}。確定繼續？`, async () => {
+                ctx.showConfirm(`自動排座會保留目前已安排座位，只排還沒入座的${isAfternoonVehicle ? '本環線學生' : '本路線學生'}。確定繼續？`, async () => {
                     const reservedSeats = {};
                     Object.entries(currentSeating).forEach(([seatId, data]) => {
                         reservedSeats[seatId] = data;
@@ -3586,7 +3726,7 @@
                         </div>
                         {privacyMode && <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-700"><i className="ph-fill ph-shield-check mr-1"></i>公開顯示中：姓名已隱藏中間一字，只影響畫面，不會修改學生資料。</div>}
                         <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-2 text-sm leading-6 text-blue-800">
-                            <i className={`ph-fill ${isAfternoonVehicle ? 'ph-sun' : 'ph-arrows-left-right'} mr-1`}></i>{isAfternoonVehicle ? `下午環線座位：只顯示已固定安排到${afternoonVehicleName}的學生；此座位表獨立於早上各路線。` : '跨線排座：可把其他路線學生拖到目前這台車，學生原本報名路線不會被改，只會記錄實際座位。'}
+                            <i className={`ph-fill ${isAfternoonVehicle ? 'ph-sun' : 'ph-arrows-left-right'} mr-1`}></i>{isAfternoonVehicle ? `環線座位：只顯示已固定安排到${afternoonVehicleName}的學生；此座位表獨立於早上各路線。` : '跨線排座：可把其他路線學生拖到目前這台車，學生原本報名路線不會被改，只會記錄實際座位。'}
                         </div>
                         <div id="seat-export-source" className="bg-gray-100 rounded-2xl p-6 border-4 border-gray-200 overflow-x-auto">
                             <div className="min-w-[320px] max-w-lg mx-auto bg-white p-4 rounded-xl shadow-sm">
@@ -3663,12 +3803,12 @@
                         </div>
                         <div className="bg-white rounded-xl shadow-md p-5 border border-gray-100">
                             <button onClick={handleAutoAssign} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-md transition">一鍵自動排座</button>
-                            <p className="mt-3 text-xs leading-5 text-gray-500">規則：保留目前已安排座位，只排{isAfternoonVehicle ? '本下午環線' : '本路線'}尚未入座學生；備註有暈車或前排需求者優先前排；兄妹偏男生側，姊弟／姐弟偏女生側；其餘依車站順序排序，男生優先左側、女生優先右側。</p>
+                            <p className="mt-3 text-xs leading-5 text-gray-500">規則：保留目前已安排座位，只排{isAfternoonVehicle ? '本環線' : '本路線'}尚未入座學生；備註有暈車或前排需求者優先前排；兄妹偏男生側，姊弟／姐弟偏女生側；其餘依車站順序排序，男生優先左側、女生優先右側。</p>
                             <div className="mt-4 border-t pt-4">
                                 <button onClick={handleClearRouteSeating} className="w-full rounded-xl border border-red-200 bg-red-50 py-3 font-bold text-red-600 transition hover:bg-red-100">
-                                    <i className="ph-bold ph-eraser mr-1"></i>清空本{isAfternoonVehicle ? '下午環線' : '路線'}座位
+                                    <i className="ph-bold ph-eraser mr-1"></i>清空本{isAfternoonVehicle ? '環線' : '路線'}座位
                                 </button>
-                                <p className="mt-2 text-xs leading-5 text-gray-500">只撤除目前選取車輛的座位安排，學生報名資料、下午調度與路線資料都會保留。</p>
+                                <p className="mt-2 text-xs leading-5 text-gray-500">只撤除目前選取車輛的座位安排，學生報名資料、環線調度與路線資料都會保留。</p>
                             </div>
                         </div>
                         <div className="bg-white rounded-xl shadow-md p-5 border border-gray-100">
