@@ -23,7 +23,7 @@
 
     <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, GoogleAuthProvider, signInWithCustomToken, signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, GoogleAuthProvider, signInWithCustomToken, signInAnonymously, signInWithRedirect, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const { useState, useEffect, useMemo } = React;
@@ -663,6 +663,7 @@
                 const originalCreatedAt = existingStudent?.createdAt || Number(existingStudent?.id) || now;
                 const publicData = {
                     id: targetId,
+                    ownerUid: ctx.user.uid,
                     dedupeKey,
                     class: formData.class,
                     seat: formData.seat,
@@ -685,6 +686,7 @@
                 };
                 const privateData = {
                     id: targetId,
+                    ownerUid: ctx.user.uid,
                     dedupeKey,
                     sid: formData.sid,
                     birthDate: normalizeBirthDate(formData.birthDate),
@@ -1713,6 +1715,9 @@
                 if (!ctx.students.length) return ctx.showMessage('目前期程沒有可建立查詢資料的學生', 'error');
                 setParentQueryMigrationBusy(true);
                 try {
+                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'public'), {
+                        addressRegions: ctx.appConfig.addressRegions || DEFAULT_ADDRESS_REGIONS
+                    }, { merge: true });
                     let count = 0;
                     for (const student of ctx.students) {
                         if (!student.lookupKey) continue;
@@ -1932,6 +1937,7 @@
                 const regions = addressRegionsFromText(e.target.addressRegions.value);
                 if (regions.length === 0) return ctx.showMessage('請至少保留一筆縣市／鄉鎮市區設定', 'error');
                 await updateSystemConfig({ addressRegions: regions });
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'public'), { addressRegions: regions }, { merge: true });
                 ctx.showMessage('地址選項已更新；不會修改既有學生資料');
             };
 
@@ -3985,7 +3991,10 @@
             useEffect(() => {
                 const isSchoolAdmin = user?.emailVerified === true && isSchoolAdminEmail(user.email);
                 setIsAdminLoggedIn(isSchoolAdmin);
-                if (isSchoolAdmin) setIsCaptainLoggedIn(true);
+                if (isSchoolAdmin) {
+                    setIsCaptainLoggedIn(true);
+                    setCurrentPage('admin');
+                }
             }, [user]);
 
             // 讀取主控設定，強制鎖定在 appId 的合法路徑下
@@ -4078,6 +4087,7 @@
                 }, console.error);
 
                 let systemConfigData = {};
+                let publicConfigData = {};
                 let sessionFormConfigData = null;
                 const baseAppConfig = {
                     adminPasswordHash: '',
@@ -4101,25 +4111,30 @@
                 const applyConfig = () => {
                     setAppConfig({
                         ...baseAppConfig,
+                        ...publicConfigData,
                         ...systemConfigData,
                         ...(sessionFormConfigData || {})
                     });
                 };
-                const uConfig = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'main'), docSnap => {
-                    if (docSnap.exists()) {
-                        const rawSystemConfig = docSnap.data();
-                        systemConfigData = {
-                            adminPasswordHash: rawSystemConfig.adminPasswordHash || '',
-                            rollCallPasswordHash: rawSystemConfig.rollCallPasswordHash || '',
-                            addressRegions: normalizeAddressRegions(rawSystemConfig.addressRegions)
-                        };
-                        applyConfig();
-                    } else {
-                        systemConfigData = {};
-                        applyConfig();
-                        setSystemError("系統密碼設定不存在。系統已停止自動寫入預設密碼，請到 Firebase 檢查 artifacts/changan-schoolbus/public/data/config/main。");
-                    }
+                const uPublicConfig = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'public'), docSnap => {
+                    publicConfigData = docSnap.exists() ? { addressRegions: normalizeAddressRegions(docSnap.data().addressRegions) } : {};
+                    applyConfig();
                 }, console.error);
+                let uConfig = () => {};
+                if (isAdminLoggedIn) {
+                    uConfig = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'main'), docSnap => {
+                        if (docSnap.exists()) {
+                            const rawSystemConfig = docSnap.data();
+                            systemConfigData = {
+                                adminPasswordHash: rawSystemConfig.adminPasswordHash || '',
+                                rollCallPasswordHash: rawSystemConfig.rollCallPasswordHash || ''
+                            };
+                        } else {
+                            systemConfigData = {};
+                        }
+                        applyConfig();
+                    }, console.error);
+                }
 
                 const uSessionConfig = onSnapshot(sessionFormConfigRef, docSnap => {
                     if (docSnap.exists()) {
@@ -4131,7 +4146,7 @@
                     }
                 }, console.error);
 
-                return () => { uPublic(); uLeaves(); uAttendance(); uAfternoonLoop(); uSeating(); uRoutes(); uConfig(); uSessionConfig(); };
+                return () => { uPublic(); uLeaves(); uAttendance(); uAfternoonLoop(); uSeating(); uRoutes(); uPublicConfig(); uConfig(); uSessionConfig(); };
             }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, isCaptainLoggedIn]);
 
             // 3. 監聽私有資料 (僅管理員)
@@ -4165,13 +4180,8 @@
             const signInSchoolAdmin = async (expectedEmail) => {
                 const provider = new GoogleAuthProvider();
                 provider.setCustomParameters({ login_hint: expectedEmail, hd: SCHOOL_ADMIN_DOMAIN });
-                const result = await signInWithPopup(auth, provider);
-                const signedInEmail = String(result.user?.email || '').toLowerCase();
-                if (!result.user?.emailVerified || !isSchoolAdminEmail(signedInEmail) || signedInEmail !== expectedEmail) {
-                    await signOut(auth);
-                    throw new Error(`請使用 ${expectedEmail} 登入，且帳號必須屬於 ${SCHOOL_ADMIN_DOMAIN}`);
-                }
-                showMessage(`已使用 ${signedInEmail} 登入後台`);
+                // 使用同頁跳轉，避免部分瀏覽器將 Firebase 處理頁留成空白分頁。
+                await signInWithRedirect(auth, provider);
             };
             const signOutAdmin = async () => {
                 await signOut(auth);
