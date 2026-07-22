@@ -23,10 +23,18 @@
 
     <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, GoogleAuthProvider, signInWithCustomToken, signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const { useState, useEffect, useMemo } = React;
+
+        const SCHOOL_ADMIN_DOMAIN = 'gm.cajh.chc.edu.tw';
+        const normalizeSchoolAdminEmail = (account) => {
+            const value = String(account || '').trim().toLowerCase();
+            if (!value) return '';
+            return value.includes('@') ? value : `${value}@${SCHOOL_ADMIN_DOMAIN}`;
+        };
+        const isSchoolAdminEmail = (email) => String(email || '').trim().toLowerCase().endsWith(`@${SCHOOL_ADMIN_DOMAIN}`);
 
         const INITIAL_ROUTES = [
             { id: '1', name: '磚磘線', capacity: 43, active: true, stops: ['蕾絲爾站', '橋下站', '道麒站', '水尾1站', '水尾2站'] },
@@ -200,6 +208,21 @@
             }));
         };
 
+        // 共用的顯示設定：報名、後台與座位頁使用同一份資料，避免各頁各自維護。
+        const WEEKDAY_OPTIONS = [
+            { val: 1, label: '週一' }, { val: 2, label: '週二' }, { val: 3, label: '週三' },
+            { val: 4, label: '週四' }, { val: 5, label: '週五' }
+        ];
+        const SHIFT_OPTIONS = [{ key: 'morning', label: '上學' }, { key: 'afternoon', label: '放學' }];
+        const AFTERNOON_LOOP_VEHICLES = [
+            { id: 'afternoon-loop-a', name: '環線 A車', capacity: 43, stops: [] },
+            { id: 'afternoon-loop-b', name: '環線 B車', capacity: 43, stops: [] }
+        ];
+        const getActiveSessionName = (masterConfig, fallback = '未命名期程') => {
+            const activeSessionId = masterConfig?.activeSessionId;
+            return masterConfig?.sessions?.find(session => session.id === activeSessionId)?.name || activeSessionId || fallback;
+        };
+
         const getGenderSeatColor = (gender) => gender === '男'
             ? 'bg-blue-100 border-blue-300 text-blue-800'
             : 'bg-pink-100 border-pink-300 text-pink-800';
@@ -253,17 +276,52 @@
 
         const normalizeText = (value) => String(value || '').trim();
         const normalizePhone = (value) => normalizeText(value).replace(/\D/g, '');
+        const normalizeBirthDate = (value) => {
+            const text = String(value || '').trim();
+            const match = text.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+            if (!match) return '';
+            const [, year, month, day] = match;
+            return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        };
+        const getExcelCellValue = (row, headers) => {
+            const header = headers.find(item => Object.prototype.hasOwnProperty.call(row, item));
+            return header ? row[header] : '';
+        };
         const buildLookupKey = async (parentName, parentMobile) => {
             const name = normalizeText(parentName).replace(/\s+/g, '');
             const phone = normalizePhone(parentMobile);
             if (!name || !phone) return '';
             return hashPassword(`${name}|${phone}`);
         };
+        const createStudentRecordId = () => {
+            if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+            return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        };
         const buildPlainParentKey = (parentName, parentMobile) => {
             const name = normalizeText(parentName).replace(/\s+/g, '');
             const phone = normalizePhone(parentMobile);
             return name && phone ? `${name}|${phone}` : '';
         };
+        // 家長查詢只會使用這份摘要；不可放入地址、生日、電話或其他私密欄位。
+        const buildParentQuerySummary = (student = {}) => ({
+            id: student.id || '',
+            dedupeKey: student.dedupeKey || '',
+            name: student.name || '',
+            gender: student.gender || '',
+            class: student.class || '',
+            seat: student.seat || '',
+            routeId: student.routeId || '',
+            stopName: student.stopName || '',
+            seatNote: student.seatNote || '',
+            surveyAnswers: student.surveyAnswers || {},
+            surveyNotes: student.surveyNotes || {},
+            returnBus: student.returnBus || '',
+            returnNote: student.returnNote || '',
+            noRide: student.noRide || {},
+            busEligibilityStatus: student.busEligibilityStatus || '待學務資料比對',
+            submittedAt: student.submittedAt || Date.now(),
+            updatedAt: student.updatedAt || Date.now()
+        });
         const getStudentTimestamp = (student = {}) => {
             const candidates = [student.updatedAt, student.submittedAt, student.createdAt, student.id];
             for (const candidate of candidates) {
@@ -404,7 +462,7 @@
         };
 
         const Navbar = ({ ctx, currentPage, setCurrentPage, setShowLoginModal }) => {
-            const activeSessionName = ctx.masterConfig?.sessions?.find(s => s.id === ctx.masterConfig?.activeSessionId)?.name || '載入中...';
+            const activeSessionName = getActiveSessionName(ctx.masterConfig, '載入中...');
 
             return (
                 <nav className="bg-indigo-600 text-white shadow-lg sticky top-0 z-50">
@@ -428,7 +486,7 @@
                                     <>
                                         <div className="hidden md:block h-6 w-px bg-indigo-400 mx-2"></div>
                                         <button onClick={() => setCurrentPage('admin')} className={`shrink-0 px-3 py-2 rounded-md text-sm font-medium hover:bg-indigo-500 transition ${currentPage === 'admin' ? 'bg-indigo-700' : ''}`}>後台管理</button>
-                                        <button onClick={() => { ctx.setIsAdminLoggedIn(false); ctx.setIsCaptainLoggedIn(false); setCurrentPage('register'); ctx.showMessage('已安全登出'); }} className="shrink-0 md:ml-2 px-3 py-2 rounded-md text-sm font-bold bg-red-500 hover:bg-red-600 transition shadow-sm"><i className="ph-bold ph-sign-out mr-1"></i>登出</button>
+                                        <button onClick={async () => { await ctx.signOutAdmin(); setCurrentPage('register'); }} className="shrink-0 md:ml-2 px-3 py-2 rounded-md text-sm font-bold bg-red-500 hover:bg-red-600 transition shadow-sm"><i className="ph-bold ph-sign-out mr-1"></i>登出</button>
                                     </>
                                 )}
                             </div>
@@ -439,31 +497,31 @@
         };
 
         const LoginModal = ({ ctx, showLoginModal, setShowLoginModal, setCurrentPage }) => {
-            const [pwd, setPwd] = useState('');
-            const [showPwd, setShowPwd] = useState(false);
+            const [account, setAccount] = useState('');
+            const [busy, setBusy] = useState(false);
             if (!showLoginModal) return null;
             const handleLogin = async (e) => {
                 e.preventDefault();
-                const inputHash = await hashPassword(pwd);
-                const isMatch = ctx.appConfig.adminPasswordHash && inputHash === ctx.appConfig.adminPasswordHash;
-
-                if (isMatch) {
-                    ctx.setIsAdminLoggedIn(true); ctx.setIsCaptainLoggedIn(true); setShowLoginModal(false); setCurrentPage('admin'); ctx.showMessage('最高權限驗證成功');
-                } else { ctx.showMessage('授權失敗', 'error'); }
-                setPwd('');
+                const email = normalizeSchoolAdminEmail(account);
+                if (!isSchoolAdminEmail(email)) return ctx.showMessage(`請輸入 ${SCHOOL_ADMIN_DOMAIN} 的學校公務帳號`, 'error');
+                setBusy(true);
+                try {
+                    await ctx.signInSchoolAdmin(email);
+                    setShowLoginModal(false);
+                    setCurrentPage('admin');
+                } catch (err) {
+                    ctx.showMessage(err.message || '學校 Google 帳號登入失敗', 'error');
+                } finally {
+                    setBusy(false);
+                }
             };
             return (
                 <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
                     <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden p-6">
-                        <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">系統認證</h3><button onClick={() => setShowLoginModal(false)}><i className="ph-bold ph-x text-xl"></i></button></div>
+                        <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">學校帳號登入</h3><button onClick={() => setShowLoginModal(false)}><i className="ph-bold ph-x text-xl"></i></button></div>
                         <form onSubmit={handleLogin} className="space-y-4">
-                            <div className="relative">
-                                <input autoFocus type={showPwd ? "text" : "password"} placeholder="輸入密碼..." value={pwd} onChange={e => setPwd(e.target.value)} className="w-full px-4 py-3 pr-12 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" />
-                                <button type="button" onClick={() => setShowPwd(!showPwd)} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition">
-                                    <i className={`ph-bold ${showPwd ? 'ph-eye-slash' : 'ph-eye'} text-xl`}></i>
-                                </button>
-                            </div>
-                            <button type="submit" className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700">登入</button>
+                            <div><label className="mb-1 block text-sm font-bold text-gray-700">學校公務帳號</label><div className="flex overflow-hidden rounded-xl border focus-within:ring-2 focus-within:ring-indigo-500"><input autoFocus type="text" value={account} onChange={e => setAccount(e.target.value)} className="min-w-0 flex-1 px-4 py-3 outline-none" /><span className="shrink-0 bg-gray-100 px-3 py-3 text-sm text-gray-600">@{SCHOOL_ADMIN_DOMAIN}</span></div><p className="mt-2 text-xs leading-5 text-gray-500">輸入帳號前段後，會由 Google 確認學校帳號身分。</p></div>
+                            <button type="submit" disabled={busy} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 disabled:bg-gray-400">{busy ? '正在連線…' : '使用學校 Google 帳號登入'}</button>
                         </form>
                     </div>
                 </div>
@@ -529,7 +587,7 @@
 
         const RegisterPage = ({ ctx }) => {
             const [formData, setFormData] = useState({
-                sid: '', class: '', seat: '', name: '', gender: '男', homePhone: '', mobile: '', parentName: '', parentMobile: '',
+                sid: '', class: '', seat: '', name: '', gender: '男', birthDate: '', homePhone: '', mobile: '', parentName: '', parentMobile: '',
                 residenceAddr: '', commAddr: '', residenceAddress: createAddressState(), commSameAsResidence: true, commAddress: createAddressState(),
                 routeId: '', stopName: '', seatNote: '', returnBus: '', returnNote: '',
                 surveyAnswers: {}, surveyNotes: {},
@@ -537,7 +595,7 @@
             });
             const [submittedOk, setSubmittedOk] = useState(false);
             const createEmptyRegisterForm = () => ({
-                sid: '', class: '', seat: '', name: '', gender: '男', homePhone: '', mobile: '', parentName: '', parentMobile: '',
+                sid: '', class: '', seat: '', name: '', gender: '男', birthDate: '', homePhone: '', mobile: '', parentName: '', parentMobile: '',
                 residenceAddr: '', commAddr: '', residenceAddress: createAddressState(), commSameAsResidence: true, commAddress: createAddressState(),
                 routeId: ctx.activeRoutes[0]?.id || '', stopName: ctx.activeRoutes[0]?.stops[0] || '', seatNote: '', returnBus: '', returnNote: '',
                 surveyAnswers: {}, surveyNotes: {}, noRide: {}
@@ -582,19 +640,18 @@
 
                 const lookupKey = await buildLookupKey(formData.parentName, formData.parentMobile);
                 const identityData = { ...formData, lookupKey };
-                const lookupMatches = lookupKey ? await ctx.findPublicStudentsByLookupKey(lookupKey) : [];
-                const existingPool = dedupeLatestStudents([...ctx.students, ...ctx.studentsPublic, ...lookupMatches]);
+                const parentQuery = lookupKey ? await ctx.findParentQueryByLookupKey(lookupKey) : null;
+                const existingPool = Object.values(parentQuery?.students || {});
                 const existingId = findExistingStudentId(existingPool, identityData);
                 const existingStudent = existingId ? existingPool.find(s => s.id === existingId) : null;
-                const liveRouteCount = selectedRoute?.capacity
-                    ? (ctx.canSeeRoster ? (ctx.routeCounts[selectedRoute.id] || 0) : await ctx.countPublicStudentsByRoute(selectedRoute.id))
-                    : 0;
+                // 家長端不再讀取全校報名資料計算名額，避免把學生名單暴露給匿名使用者。
+                const liveRouteCount = selectedRoute?.capacity && ctx.canSeeRoster ? (ctx.routeCounts[selectedRoute.id] || 0) : 0;
                 if (!existingId && selectedRoute && selectedRoute.capacity && liveRouteCount >= selectedRoute.capacity) {
                     return ctx.showMessage('非常抱歉，該路線名額已滿！', 'error');
                 }
 
                 const now = Date.now();
-                const targetId = existingId || now.toString();
+                const targetId = existingId || createStudentRecordId();
                 const dedupeKey = createStudentDedupeKey(identityData);
                 const surveyAnswers = {};
                 const surveyNotes = {};
@@ -630,6 +687,7 @@
                     id: targetId,
                     dedupeKey,
                     sid: formData.sid,
+                    birthDate: normalizeBirthDate(formData.birthDate),
                     homePhone: formData.homePhone,
                     mobile: formData.mobile,
                     parentName: formData.parentName,
@@ -639,6 +697,7 @@
                 try {
                     await setDoc(ctx.getDocRef('students_public', targetId), publicData, { merge: true });
                     await setDoc(ctx.getDocRef('students_private', targetId), privateData, { merge: true });
+                    await ctx.upsertParentQuerySummary(lookupKey, buildParentQuerySummary(publicData));
                     ctx.showMessage(existingId ? '已更新原本的報名資料' : '報名成功！資料已送出');
                     setSubmittedOk(true);
                     setFormData(createEmptyRegisterForm());
@@ -647,7 +706,7 @@
 
             const currentRouteCount = ctx.canSeeRoster ? (ctx.routeCounts[formData.routeId] || 0) : null;
             const isSelectedRouteFull = selectedRoute && selectedRoute.capacity && currentRouteCount !== null && currentRouteCount >= selectedRoute.capacity;
-            const activeSessionName = ctx.masterConfig?.sessions?.find(s => s.id === ctx.masterConfig?.activeSessionId)?.name || '載入中...';
+            const activeSessionName = getActiveSessionName(ctx.masterConfig, '載入中...');
 
             if (submittedOk) {
                 return (
@@ -704,6 +763,7 @@
                                             <div><label className="block text-xs text-gray-500 mb-1">學號</label><input required type="text" placeholder="學號" value={formData.sid} onChange={e => setFormData({...formData, sid: e.target.value})} className="w-full min-w-0 px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                             <div><label className="block text-xs text-gray-500 mb-1">座號</label><input required type="number" placeholder="座號" value={formData.seat} onChange={e => setFormData({...formData, seat: e.target.value})} className="w-full min-w-0 px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                         </div>
+                                        <div><label className="block text-xs text-gray-500 mb-1">出生日期（西元）</label><input required type="date" value={formData.birthDate} onChange={e => setFormData({...formData, birthDate: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /><p className="mt-1 text-[11px] leading-4 text-indigo-600">請依學務資料填寫，例如 2013-11-13。</p></div>
                                         <div><label className="block text-xs text-gray-500 mb-1">姓名</label><input required type="text" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                         <div><label className="block text-xs text-gray-500 mb-1">性別</label><select value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none bg-white"><option value="男">男</option><option value="女">女</option></select></div>
                                         <div><label className="block text-xs text-gray-500 mb-1">監護人姓名</label><input required type="text" value={formData.parentName} onChange={e => setFormData({...formData, parentName: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
@@ -877,7 +937,8 @@
                 setLoading(true);
                 const lookupKey = await buildLookupKey(parentName, parentMobile);
                 try {
-                    const matched = await ctx.findPublicStudentsByLookupKey(lookupKey);
+                    const parentQuery = await ctx.findParentQueryByLookupKey(lookupKey);
+                    const matched = Object.values(parentQuery?.students || {});
                     setResults(matched.sort((a, b) => getStudentOrderValue(a) - getStudentOrderValue(b)));
                     setSearched(true);
                 } catch (err) {
@@ -933,6 +994,10 @@
                                                 <div>
                                                     <div className="text-xs font-bold text-sky-600">查詢結果 {idx + 1}</div>
                                                     <h3 className="mt-1 text-xl font-bold text-gray-900">{student.name || '未填姓名'} <span className="text-sm font-medium text-gray-500">({student.gender || '未填性別'})</span></h3>
+                                                </div>
+                                                <div className="flex flex-wrap justify-end gap-2">
+                                                    <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">已送出報名</span>
+                                                    <span className={`rounded-full px-3 py-1 text-xs font-bold ${student.busEligibilityStatus === '已確認符合' ? 'bg-emerald-100 text-emerald-700' : student.busEligibilityStatus === '不符合指定里' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'}`}>資格狀態：{student.busEligibilityStatus || '待學務資料比對'}</span>
                                                 </div>
                                             </div>
                                             <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm leading-6">
@@ -1584,8 +1649,9 @@
             const [eligibilityLabBusy, setEligibilityLabBusy] = useState(false);
             const [eligibilityReport, setEligibilityReport] = useState(null);
             const [eligibilityStatusFilter, setEligibilityStatusFilter] = useState('全部');
-            const editDays = [{ val: 1, label: '週一' }, { val: 2, label: '週二' }, { val: 3, label: '週三' }, { val: 4, label: '週四' }, { val: 5, label: '週五' }];
-            const editShifts = [{ key: 'morning', label: '上學' }, { key: 'afternoon', label: '放學' }];
+            const [parentQueryMigrationBusy, setParentQueryMigrationBusy] = useState(false);
+            const editDays = WEEKDAY_OPTIONS;
+            const editShifts = SHIFT_OPTIONS;
 
             useEffect(() => {
                 setSurveyDrafts(buildSurveyQuestions(ctx.appConfig));
@@ -1595,10 +1661,7 @@
                 if (studentRouteFilter === 'all') return ctx.students;
                 return ctx.students.filter(s => s.routeId === studentRouteFilter);
             }, [ctx.students, studentRouteFilter]);
-            const currentSessionName = useMemo(() => {
-                const sessions = ctx.masterConfig?.sessions || [];
-                return sessions.find(s => s.id === ctx.masterConfig?.activeSessionId)?.name || ctx.masterConfig?.activeSessionId || '未命名期程';
-            }, [ctx.masterConfig]);
+            const currentSessionName = getActiveSessionName(ctx.masterConfig);
             const visibleEligibilityResults = useMemo(() => {
                 if (!eligibilityReport) return [];
                 return eligibilityStatusFilter === '全部'
@@ -1646,6 +1709,25 @@
                 });
             };
 
+            const buildParentQueryIndex = async () => {
+                if (!ctx.students.length) return ctx.showMessage('目前期程沒有可建立查詢資料的學生', 'error');
+                setParentQueryMigrationBusy(true);
+                try {
+                    let count = 0;
+                    for (const student of ctx.students) {
+                        if (!student.lookupKey) continue;
+                        await ctx.upsertParentQuerySummary(student.lookupKey, buildParentQuerySummary(student));
+                        count += 1;
+                    }
+                    ctx.showMessage(`已建立 ${count} 筆家長查詢摘要；沒有修改任何學生資料。`);
+                } catch (err) {
+                    console.error(err);
+                    ctx.showMessage('建立家長查詢摘要失敗，請確認 Firebase 權限', 'error');
+                } finally {
+                    setParentQueryMigrationBusy(false);
+                }
+            };
+
             const runEligibilityLab = async () => {
                 if (!eligibilityExcelFile) {
                     ctx.showMessage('請先選擇學務系統 Excel', 'error');
@@ -1662,26 +1744,47 @@
                     const workbook = window.XLSX.read(await eligibilityExcelFile.arrayBuffer(), { type: 'array' });
                     const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
                     const rosterRows = window.XLSX.utils.sheet_to_json(firstSheet, { defval: '', raw: false });
-                    const requiredHeaders = ['姓名', '父親姓名', '母親姓名', '父_行動電話', '母_行動電話', '戶籍地址', '居住地址'];
-                    const missingHeaders = requiredHeaders.filter(header => !Object.prototype.hasOwnProperty.call(rosterRows[0] || {}, header));
-                    if (missingHeaders.length) throw new Error(`Excel 缺少欄位：${missingHeaders.join('、')}`);
+                    if (!rosterRows.length) throw new Error('Excel 第一張工作表沒有可讀取的學生資料');
+                    if (!Object.prototype.hasOwnProperty.call(rosterRows[0], '姓名')) throw new Error('Excel 缺少「姓名」欄位');
 
                     const roster = rosterRows.map((row, index) => ({
                         index: index + 2,
                         name: row['姓名'],
-                        fatherName: row['父親姓名'], fatherMobile: row['父_行動電話'],
-                        motherName: row['母親姓名'], motherMobile: row['母_行動電話'],
-                        residenceAddr: row['戶籍地址'], commAddr: row['居住地址']
+                        sid: getExcelCellValue(row, ['學號', '學生學號']),
+                        birthDate: normalizeBirthDate(getExcelCellValue(row, ['出生年月日', '出生日期', '生日'])),
+                        fatherName: getExcelCellValue(row, ['父親姓名']), fatherMobile: getExcelCellValue(row, ['父_行動電話', '父親行動電話']),
+                        motherName: getExcelCellValue(row, ['母親姓名']), motherMobile: getExcelCellValue(row, ['母_行動電話', '母親行動電話']),
+                        residenceAddr: getExcelCellValue(row, ['戶籍地址']), commAddr: getExcelCellValue(row, ['居住地址', '通訊地址', '實際居住地址'])
                     }));
                     const results = ctx.students.map(student => {
                         const studentName = student.name || '';
                         const parentName = student.parentName || '';
                         const parentMobile = student.parentMobile || '';
+                        const studentSid = String(student.sid || '').trim();
+                        const studentBirthDate = normalizeBirthDate(student.birthDate);
                         const sameName = roster.filter(row => normalizeMatchText(row.name) === normalizeMatchText(studentName));
-                        const matchedRows = sameName.filter(row => [
+                        const sameStudentId = studentSid ? roster.filter(row => normalizeMatchText(row.sid) === normalizeMatchText(studentSid)) : [];
+                        const nameAndBirthDate = studentBirthDate ? sameName.filter(row => row.birthDate === studentBirthDate) : [];
+                        const parentMatches = sameName.filter(row => [
                             [row.fatherName, row.fatherMobile],
                             [row.motherName, row.motherMobile]
                         ].some(([name, mobile]) => normalizeMatchText(name) === normalizeMatchText(parentName) && normalizePhone(mobile) === normalizePhone(parentMobile) && normalizePhone(mobile)));
+                        const idAndBirthDate = studentSid && studentBirthDate ? sameStudentId.filter(row => row.birthDate === studentBirthDate) : [];
+                        let matchedRows = [];
+                        let matchMethod = '';
+                        if (idAndBirthDate.length) {
+                            matchedRows = idAndBirthDate;
+                            matchMethod = '學號＋出生日期';
+                        } else if (sameStudentId.length === 1) {
+                            matchedRows = sameStudentId;
+                            matchMethod = '學號';
+                        } else if (nameAndBirthDate.length) {
+                            matchedRows = nameAndBirthDate;
+                            matchMethod = '姓名＋出生日期';
+                        } else {
+                            matchedRows = parentMatches;
+                            matchMethod = matchedRows.length ? '姓名＋監護人資料' : '';
+                        }
                         const route = ctx.routes.find(item => item.id === student.routeId) || {};
                         const base = {
                             studentId: student.id,
@@ -1692,23 +1795,27 @@
                             stopName: student.stopName || '未填車站',
                             noRideText: formatNoRide(student.noRide),
                             matchedCount: matchedRows.length,
+                            matchMethod,
                             rosterRow: matchedRows[0]?.index || null,
+                            birthDate: studentBirthDate,
+                            excelBirthDate: matchedRows[0]?.birthDate || '',
                             residenceAddr: matchedRows[0]?.residenceAddr || '',
                             commAddr: matchedRows[0]?.commAddr || ''
                         };
-                        if (matchedRows.length === 0) return { ...base, status: '學務資料未比對', note: sameName.length ? '姓名相同，但監護人姓名或手機未完全對上' : 'Excel 找不到同名學生' };
+                        if (matchedRows.length === 0) return { ...base, status: '學務資料未比對', note: sameName.length ? '姓名相同，但學號、出生日期與監護人資料均未完全對上' : 'Excel 找不到同名學生' };
                         if (matchedRows.length > 1) return { ...base, status: '資料重複待人工確認', note: `Excel 有 ${matchedRows.length} 筆同時符合姓名與監護人資料` };
 
                         const matched = matchedRows[0];
+                        const birthDateNote = !studentBirthDate ? '家長尚未填出生日期' : !matched.birthDate ? 'Excel 未提供出生日期' : studentBirthDate === matched.birthDate ? '出生日期相符' : `出生日期不一致（Excel：${matched.birthDate}）`;
                         const residenceVillage = getPriorityVillageFromAddress(matched.residenceAddr);
                         const commVillage = getPriorityVillageFromAddress(matched.commAddr);
                         const hasVillage = /[\u4e00-\u9fff]{1,5}里/.test(`${matched.residenceAddr || ''}${matched.commAddr || ''}`);
                         if (residenceVillage || commVillage) {
                             const sources = [residenceVillage && `戶籍地址：${residenceVillage}`, commVillage && `通訊地址：${commVillage}`].filter(Boolean).join('；');
-                            return { ...base, status: '已確認符合', note: `${sources}，符合指定搭車里` };
+                            return { ...base, status: '已確認符合', note: `${matchMethod}；${birthDateNote}；${sources}，符合指定搭車里` };
                         }
-                        if (hasVillage) return { ...base, status: '不符合指定里', note: '戶籍或通訊地址已標示里別，但皆不在指定搭車里' };
-                        return { ...base, status: '地址待判讀', note: '戶籍與通訊地址皆未含可判定的指定里別' };
+                        if (hasVillage) return { ...base, status: '不符合指定里', note: `${matchMethod}；${birthDateNote}；戶籍或通訊地址已標示里別，但皆不在指定搭車里` };
+                        return { ...base, status: '地址待判讀', note: `${matchMethod}；${birthDateNote}；戶籍與通訊地址皆未含可判定的指定里別` };
                     });
                     const summary = results.reduce((counts, row) => ({ ...counts, [row.status]: (counts[row.status] || 0) + 1 }), {});
                     setEligibilityReport({
@@ -2333,7 +2440,7 @@
             const handleEditSubmit = async (e) => {
                 e.preventDefault();
                 if (!ctx.user) return;
-                const { id, class: cls, seat, name, gender, routeId, stopName, seatNote, sid, homePhone, mobile, parentName, parentMobile } = editFormData;
+                const { id, class: cls, seat, name, gender, routeId, stopName, seatNote, sid, birthDate, homePhone, mobile, parentName, parentMobile } = editFormData;
                 const surveyQuestions = buildSurveyQuestions(ctx.appConfig);
                 const surveyAnswers = editFormData.surveyAnswers || {};
                 const surveyNotes = editFormData.surveyNotes || {};
@@ -2373,6 +2480,7 @@
                 const privateData = {
                     dedupeKey,
                     sid,
+                    birthDate: normalizeBirthDate(birthDate),
                     homePhone,
                     mobile,
                     parentName,
@@ -2391,6 +2499,7 @@
                 try {
                     await setDoc(ctx.getDocRef('students_public', id), publicData, { merge: true });
                     await setDoc(ctx.getDocRef('students_private', id), privateData, { merge: true });
+                    await ctx.upsertParentQuerySummary(lookupKey, buildParentQuerySummary({ ...publicData, id }));
                     ctx.showMessage('學生資料已更新');
                     setEditModalOpen(false);
                 } catch(err) { ctx.showMessage('更新失敗', 'error'); }
@@ -2400,7 +2509,7 @@
                 const BOM = '\uFEFF';
                 const surveyQuestions = buildSurveyQuestions(ctx.appConfig);
                 const surveyHeaders = surveyQuestions.flatMap(q => [q.title, `${q.title}備註`]);
-                const headers = ["學號","班級","座號","姓名","性別","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","戶籍里","戶籍校車資格","通訊／實際居住地址","實際居住里","實際居住資格"];
+                const headers = ["學號","班級","座號","姓名","性別","出生日期","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","戶籍里","戶籍校車資格","通訊／實際居住地址","實際居住里","實際居住資格"];
                 const escapeCsv = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
                 const buildStudentRow = (s) => {
                     const routeName = ctx.routes.find(r => r.id === s.routeId)?.name || '';
@@ -2410,7 +2519,7 @@
                         const note = s.surveyNotes?.[q.id] || (idx === 0 ? (s.returnNote || '') : '');
                         return [answer, note];
                     });
-                    return [s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.residenceVillage || '', s.busEligibilityStatus || '', s.commAddr || '', s.actualVillage || '', s.actualEligibilityStatus || ''];
+                    return [s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', normalizeBirthDate(s.birthDate), routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.residenceVillage || '', s.busEligibilityStatus || '', s.commAddr || '', s.actualVillage || '', s.actualEligibilityStatus || ''];
                 };
                 const sortForRoute = (list, route) => {
                     const stopOrder = route?.stops || [];
@@ -2527,7 +2636,7 @@
                                         <div className="rounded-xl border border-indigo-100 bg-white p-4"><p className="text-xs font-bold text-gray-500">產生時間</p><p className="mt-1 text-sm font-bold text-indigo-800">{eligibilityReport.generatedAt}</p></div>
                                     </div>
                                     <div className="space-y-3"><p className="text-sm font-bold text-gray-700">點選分類可只看該類學生</p><div className="flex flex-wrap gap-2"><button type="button" onClick={() => setEligibilityStatusFilter('全部')} className={`rounded-full px-3 py-1.5 text-sm font-bold transition ${eligibilityStatusFilter === '全部' ? 'bg-violet-700 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>全部 {eligibilityReport.results.length} 人</button>{Object.entries(eligibilityReport.summary).map(([status, count]) => <button type="button" key={status} onClick={() => setEligibilityStatusFilter(status)} className={`rounded-full px-3 py-1.5 text-sm font-bold transition ${eligibilityStatusFilter === status ? 'bg-violet-700 text-white shadow-sm' : 'bg-violet-100 text-violet-800 hover:bg-violet-200'}`}>{status} {count} 人</button>)}</div></div>
-                                    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-md"><div className="flex flex-wrap items-center justify-between gap-2 border-b bg-gray-50 p-4 font-bold text-gray-800"><span>比對明細（僅本機顯示）</span><span className="text-sm text-violet-700">{eligibilityStatusFilter}：{visibleEligibilityResults.length} 人</span></div><div className="max-h-[36rem] overflow-auto"><table className="min-w-[980px] w-full text-left text-sm"><thead className="sticky top-0 bg-white text-xs text-gray-500 shadow-sm"><tr><th className="px-4 py-3">學生</th><th className="px-4 py-3">暑期路線／車站</th><th className="px-4 py-3">固定不搭車</th><th className="px-4 py-3">比對結果</th><th className="px-4 py-3">判定說明</th></tr></thead><tbody className="divide-y">{visibleEligibilityResults.map(row => <tr key={row.studentId}><td className="px-4 py-3 font-bold text-gray-900">{row.name}<div className="mt-1 text-xs font-normal text-gray-500">{row.class || '未填班級'} 班 {row.seat || '未填座號'} 號</div></td><td className="px-4 py-3">{row.routeName}<div className="mt-1 text-xs text-gray-500">{row.stopName}</div></td><td className="px-4 py-3 text-xs">{row.noRideText}</td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-bold ${row.status === '已確認符合' ? 'bg-emerald-100 text-emerald-700' : row.status === '不符合指定里' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'}`}>{row.status}</span></td><td className="px-4 py-3 text-xs text-gray-600">{row.note}<div className="mt-1 text-gray-400">Excel 第 {row.rosterRow || '—'} 列</div></td></tr>)}{visibleEligibilityResults.length === 0 && <tr><td colSpan="5" className="px-4 py-10 text-center text-sm text-gray-500">此分類目前沒有學生</td></tr>}</tbody></table></div></div>
+                                    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-md"><div className="flex flex-wrap items-center justify-between gap-2 border-b bg-gray-50 p-4 font-bold text-gray-800"><span>比對明細（僅本機顯示）</span><span className="text-sm text-violet-700">{eligibilityStatusFilter}：{visibleEligibilityResults.length} 人</span></div><div className="max-h-[36rem] overflow-auto"><table className="min-w-[1080px] w-full text-left text-sm"><thead className="sticky top-0 bg-white text-xs text-gray-500 shadow-sm"><tr><th className="px-4 py-3">學生</th><th className="px-4 py-3">出生日期比對</th><th className="px-4 py-3">暑期路線／車站</th><th className="px-4 py-3">固定不搭車</th><th className="px-4 py-3">比對結果</th><th className="px-4 py-3">判定說明</th></tr></thead><tbody className="divide-y">{visibleEligibilityResults.map(row => <tr key={row.studentId}><td className="px-4 py-3 font-bold text-gray-900">{row.name}<div className="mt-1 text-xs font-normal text-gray-500">{row.class || '未填班級'} 班 {row.seat || '未填座號'} 號</div></td><td className="px-4 py-3 text-xs text-gray-600">{row.birthDate || '家長未填'}<div className={`mt-1 font-bold ${row.birthDate && row.excelBirthDate && row.birthDate === row.excelBirthDate ? 'text-emerald-700' : 'text-amber-700'}`}>{row.excelBirthDate ? `Excel：${row.excelBirthDate}` : 'Excel 未提供／未比對'}</div></td><td className="px-4 py-3">{row.routeName}<div className="mt-1 text-xs text-gray-500">{row.stopName}</div></td><td className="px-4 py-3 text-xs">{row.noRideText}</td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-bold ${row.status === '已確認符合' ? 'bg-emerald-100 text-emerald-700' : row.status === '不符合指定里' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'}`}>{row.status}</span></td><td className="px-4 py-3 text-xs text-gray-600">{row.note}<div className="mt-1 text-gray-400">{row.matchMethod || '—'}｜Excel 第 {row.rosterRow || '—'} 列</div></td></tr>)}{visibleEligibilityResults.length === 0 && <tr><td colSpan="6" className="px-4 py-10 text-center text-sm text-gray-500">此分類目前沒有學生</td></tr>}</tbody></table></div></div>
                                 </>
                             )}
                         </div>
@@ -3038,6 +3147,11 @@
                                 <textarea name="addressRegions" defaultValue={addressRegionsToText(ctx.appConfig.addressRegions)} rows="7" className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-amber-500" />
                                 <button type="submit" className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700">儲存地址選項</button>
                             </form>
+                            <div className="md:col-span-2 rounded-xl border border-sky-200 bg-sky-50 p-4">
+                                <h4 className="font-bold text-sky-900">家長查詢資料整理</h4>
+                                <p className="mt-1 text-sm leading-6 text-sky-800">建立僅供家長以「監護人姓名＋手機」查詢的摘要。摘要保留家長原本可看到的報名內容與資格狀態，但不含地址、生日、電話；不會修改或刪除任何學生資料。</p>
+                                <button type="button" onClick={() => ctx.showConfirm('確定建立目前期程的家長查詢摘要嗎？這會新增查詢摘要，但不會修改學生資料、路線或座位。', buildParentQueryIndex)} disabled={parentQueryMigrationBusy} className="mt-3 rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white hover:bg-sky-700 disabled:bg-gray-300"><i className="ph-bold ph-shield-check mr-2"></i>{parentQueryMigrationBusy ? '建立中…' : '建立家長查詢摘要'}</button>
+                            </div>
                         </div>
                     </div>
 
@@ -3132,6 +3246,7 @@
                                                 <div><label className="block text-xs text-gray-500 mb-1">班級</label><input required type="text" value={editFormData.class || ''} onChange={e => setEditFormData({...editFormData, class: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                                 <div><label className="block text-xs text-gray-500 mb-1">座號</label><input required type="number" value={editFormData.seat || ''} onChange={e => setEditFormData({...editFormData, seat: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                                 <div><label className="block text-xs text-gray-500 mb-1">學號</label><input required type="text" value={editFormData.sid || ''} onChange={e => setEditFormData({...editFormData, sid: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
+                                                <div><label className="block text-xs text-gray-500 mb-1">出生日期（西元）</label><input type="date" value={editFormData.birthDate || ''} onChange={e => setEditFormData({...editFormData, birthDate: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /><p className="mt-1 text-[11px] text-gray-500">新報名必填；舊資料可日後補填。</p></div>
                                                 <div><label className="block text-xs text-gray-500 mb-1">學生手機</label><input type="text" value={editFormData.mobile || ''} onChange={e => setEditFormData({...editFormData, mobile: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                                 <div><label className="block text-xs text-gray-500 mb-1">監護人姓名</label><input required type="text" value={editFormData.parentName || ''} onChange={e => setEditFormData({...editFormData, parentName: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                                 <div><label className="block text-xs text-gray-500 mb-1">監護人手機</label><input required type="text" value={editFormData.parentMobile || ''} onChange={e => setEditFormData({...editFormData, parentMobile: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
@@ -3257,11 +3372,7 @@
             const [activeColor, setActiveColor] = useState(null);
             const [privacyMode, setPrivacyMode] = useState(false);
 
-            const afternoonVehicles = [
-                { id: 'afternoon-loop-a', name: '環線 A車', capacity: 43, stops: [] },
-                { id: 'afternoon-loop-b', name: '環線 B車', capacity: 43, stops: [] }
-            ];
-            const seatingVehicles = [...ctx.activeRoutes, ...afternoonVehicles];
+            const seatingVehicles = [...ctx.activeRoutes, ...AFTERNOON_LOOP_VEHICLES];
             const isAfternoonVehicle = routeId === 'afternoon-loop-a' || routeId === 'afternoon-loop-b';
             const afternoonVehicleName = routeId === 'afternoon-loop-a' ? '環線 A車' : routeId === 'afternoon-loop-b' ? '環線 B車' : '';
             const seatingKey = routeId;
@@ -3286,7 +3397,7 @@
                     .flatMap(([, arr]) => Object.values(arr?.seats || {}).map(s => s.studentId));
             const assignedStudentIdSet = new Set(assignedStudentIds);
             const currentRoute = seatingVehicles.find(r => r.id === routeId);
-            const currentSessionName = ctx.masterConfig?.sessions?.find(s => s.id === ctx.masterConfig?.activeSessionId)?.name || ctx.masterConfig?.activeSessionId || '目前期程';
+            const currentSessionName = getActiveSessionName(ctx.masterConfig, '目前期程');
             const stopOrder = currentRoute?.stops || [];
             const getRouteName = (id) => seatingVehicles.find(r => r.id === id)?.name || ctx.routes.find(r => r.id === id)?.name || '未設定路線';
             const isCrossRouteStudent = (student) => !isAfternoonVehicle && student && student.routeId && student.routeId !== routeId;
@@ -3849,7 +3960,11 @@
 
             // 1. 初始化 Auth 與全域主控設定 (Master Config)
             useEffect(() => {
-                const initAuth = async () => {
+                let initialized = false;
+                const unsubscribeAuth = onAuthStateChanged(auth, async activeUser => {
+                    setUser(activeUser);
+                    if (activeUser || initialized) return;
+                    initialized = true;
                     try {
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             await signInWithCustomToken(auth, __initial_auth_token);
@@ -3860,11 +3975,15 @@
                         console.error("Auth Error", e);
                         setSystemError("Firebase 登入失敗，請確認網路連線、Firebase Authentication 匿名登入，以及授權網域設定。");
                     }
-                };
-                initAuth();
-                const unsubscribeAuth = onAuthStateChanged(auth, setUser);
+                });
                 return () => unsubscribeAuth();
             }, []);
+
+            useEffect(() => {
+                const isSchoolAdmin = user?.emailVerified === true && isSchoolAdminEmail(user.email);
+                setIsAdminLoggedIn(isSchoolAdmin);
+                if (isSchoolAdmin) setIsCaptainLoggedIn(true);
+            }, [user]);
 
             // 讀取主控設定，強制鎖定在 appId 的合法路徑下
             useEffect(() => {
@@ -3942,12 +4061,14 @@
                 const uRoutes = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'routes'), snap => {
                     const mapped = filterAndMapSessionDocs(snap.docs, sessionId);
                     if (mapped.length === 0) {
-                        INITIAL_ROUTES.forEach(r => {
-                            setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'routes', `${sessionId}_${r.id}`), {
-                                ...r,
-                                sessionId: sessionId
+                        if (isAdminLoggedIn) {
+                            INITIAL_ROUTES.forEach(r => {
+                                setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'routes', `${sessionId}_${r.id}`), {
+                                    ...r,
+                                    sessionId: sessionId
+                                });
                             });
-                        });
+                        }
                     } else {
                         setRoutes(mapped);
                     }
@@ -4038,6 +4159,25 @@
 
             const showMessage = (text, type = 'success') => { setMessage({ text, type }); setTimeout(() => setMessage(null), 3000); };
             const showConfirm = (msg, action) => { setConfirmDialog({ msg, action: () => { action(); setConfirmDialog(null); } }); };
+            const signInSchoolAdmin = async (expectedEmail) => {
+                const provider = new GoogleAuthProvider();
+                provider.setCustomParameters({ login_hint: expectedEmail, hd: SCHOOL_ADMIN_DOMAIN });
+                const result = await signInWithPopup(auth, provider);
+                const signedInEmail = String(result.user?.email || '').toLowerCase();
+                if (!result.user?.emailVerified || !isSchoolAdminEmail(signedInEmail) || signedInEmail !== expectedEmail) {
+                    await signOut(auth);
+                    throw new Error(`請使用 ${expectedEmail} 登入，且帳號必須屬於 ${SCHOOL_ADMIN_DOMAIN}`);
+                }
+                showMessage(`已使用 ${signedInEmail} 登入後台`);
+            };
+            const signOutAdmin = async () => {
+                await signOut(auth);
+                setIsAdminLoggedIn(false);
+                setIsCaptainLoggedIn(false);
+                // 登出後立即回到家長可使用的匿名身分，避免同一台電腦的家長頁面無法載入資料。
+                await signInAnonymously(auth);
+                showMessage('已安全登出');
+            };
 
             // 封裝動態路徑，使其格式完全符合安全規格限制
             const getDocRef = (colName, docId) => {
@@ -4046,14 +4186,30 @@
             const getCollectionRef = (colName) => {
                 return collection(db, 'artifacts', appId, 'public', 'data', colName);
             };
+            const getParentQueryRef = (lookupKey) => {
+                return doc(db, 'artifacts', appId, 'public', 'data', 'parent_queries', `${masterConfig.activeSessionId}_${lookupKey}`);
+            };
+            const findParentQueryByLookupKey = async (lookupKey) => {
+                if (!masterConfig?.activeSessionId || !lookupKey) return null;
+                const snap = await getDoc(getParentQueryRef(lookupKey));
+                return snap.exists() ? snap.data() : null;
+            };
+            const upsertParentQuerySummary = async (lookupKey, summary) => {
+                if (!masterConfig?.activeSessionId || !lookupKey || !summary?.id) return;
+                const ref = getParentQueryRef(lookupKey);
+                const snap = await getDoc(ref);
+                const students = { ...(snap.exists() ? (snap.data().students || {}) : {}), [summary.id]: summary };
+                await setDoc(ref, {
+                    sessionId: masterConfig.activeSessionId,
+                    lookupKey,
+                    students,
+                    updatedAt: Date.now()
+                }, { merge: true });
+            };
             const querySessionDocsByField = async (colName, fieldName, value) => {
                 if (!masterConfig?.activeSessionId || value === undefined || value === null || value === '') return [];
                 const snap = await getDocs(query(getCollectionRef(colName), where(fieldName, '==', value)));
                 return filterAndMapSessionDocs(snap.docs, masterConfig.activeSessionId);
-            };
-            const findPublicStudentsByLookupKey = async (lookupKey) => {
-                const matches = await querySessionDocsByField('students_public', 'lookupKey', lookupKey);
-                return dedupeLatestStudents(matches);
             };
             const countPublicStudentsByRoute = async (routeId) => {
                 const matches = await querySessionDocsByField('students_public', 'routeId', routeId);
@@ -4088,7 +4244,7 @@
             }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, studentsPublic, studentsPrivate]);
 
             const canSeeRoster = isAdminLoggedIn || isCaptainLoggedIn;
-            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, setIsAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, hashPassword, getDocRef, routeCounts, canSeeRoster, findPublicStudentsByLookupKey, countPublicStudentsByRoute };
+            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, setIsAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, countPublicStudentsByRoute };
 
             const renderContent = () => {
                 switch (currentPage) {
