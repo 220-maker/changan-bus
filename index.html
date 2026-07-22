@@ -2582,23 +2582,26 @@
 
             return (
                 <div className="max-w-6xl mx-auto p-4 space-y-8">
-                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 space-y-4">
-                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                            <h2 className="text-2xl font-bold text-gray-800 flex items-center"><i className="ph-fill ph-gear text-3xl mr-2 text-indigo-600"></i> 後台管理中心</h2>
-                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:flex lg:flex-wrap lg:justify-end">
+                    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+                        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                            <div className="flex shrink-0 items-center gap-3">
+                                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-100 text-indigo-600 shadow-sm"><i className="ph-fill ph-gear text-3xl"></i></div>
+                                <div><p className="text-xs font-bold tracking-widest text-indigo-500">SCHOOL BUS ADMIN</p><h2 className="whitespace-nowrap text-2xl font-black tracking-tight text-slate-800">後台管理中心</h2></div>
+                            </div>
+                            <div className="flex flex-wrap gap-2 xl:justify-end">
                                 {adminTabs.map(tab => (
                                     <button
                                         key={tab.id}
                                         type="button"
                                         onClick={() => setAdminTab(tab.id)}
-                                        className={`inline-flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-bold transition ${adminTab === tab.id ? 'border-indigo-600 bg-indigo-600 text-white shadow-sm' : 'border-gray-200 bg-white text-gray-600 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700'}`}
+                                        className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border px-3.5 py-2 text-sm font-bold transition sm:px-4 ${adminTab === tab.id ? 'border-indigo-600 bg-indigo-600 text-white shadow-md shadow-indigo-200' : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700'}`}
                                     >
                                         <i className={`ph-fill ${tab.icon} text-lg`}></i>{tab.label}
                                     </button>
                                 ))}
                             </div>
                         </div>
-                        <div className="rounded-lg bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-800">
+                        <div className="flex items-start gap-2 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm font-medium leading-6 text-indigo-800"><i className="ph-fill ph-info mt-0.5 text-lg text-indigo-500"></i><span>
                             {adminTab === 'dashboard' && '查看每日搭車預估與無故缺席提醒。'}
                             {adminTab === 'sessions' && '管理期程、報名表設定、報名截止時間與車長點名期間。'}
                             {adminTab === 'routes' && '新增、隱藏、刪除路線，調整車站與人數上限。'}
@@ -2608,7 +2611,7 @@
                             {adminTab === 'seating' && '安排各路線與環線 A、B 車的座位，並可匯出座位表。'}
                             {adminTab === 'eligibility-lab' && '以目前線上報名資料與本機 Excel 進行資格比對；不會寫入 Firebase。'}
                             {adminTab === 'settings' && '修改後台密碼、車長密碼，或執行危險操作。'}
-                        </div>
+                        </span></div>
                     </div>
 
                     {adminTab === 'afternoon-loop' && <AfternoonLoopPage ctx={ctx} />}
