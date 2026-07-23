@@ -2575,10 +2575,7 @@
             const openEditModal = (student) => {
                 setEditFormData({
                     ...student,
-                    noRide: student.noRide || {},
-                    residenceAddress: getAddressStateFromStudent('residence', student),
-                    commSameAsResidence: student.commSameAsResidence === true || (!student.commAddr && !student.commVillage && !student.commDetail && !student.commOtherAddr),
-                    commAddress: getAddressStateFromStudent('comm', student)
+                    noRide: student.noRide || {}
                 });
                 setEditModalOpen(true);
             };
@@ -2604,13 +2601,6 @@
                 const now = Date.now();
                 const lookupKey = await buildLookupKey(parentName, parentMobile);
                 const dedupeKey = createStudentDedupeKey({ sid, class: cls, seat, name, parentName, parentMobile, lookupKey });
-                const residenceAddress = editFormData.residenceAddress || getAddressStateFromStudent('residence', editFormData);
-                const commSameAsResidence = editFormData.commSameAsResidence === true;
-                const commAddress = commSameAsResidence ? residenceAddress : (editFormData.commAddress || getAddressStateFromStudent('comm', editFormData));
-                const residenceAddr = composeAddressText(residenceAddress);
-                const commAddr = commSameAsResidence ? residenceAddr : composeAddressText(commAddress);
-                const residenceEligibility = getAddressEligibility(residenceAddress);
-                const actualEligibility = getAddressEligibility(commAddress);
                 const publicData = {
                     dedupeKey,
                     lookupKey,
@@ -2626,11 +2616,6 @@
                     returnBus: firstQuestion ? (surveyAnswers[firstQuestion.id] || '') : '',
                     returnNote: firstQuestion ? (surveyNotes[firstQuestion.id] || '') : '',
                     noRide: editFormData.noRide || {},
-                    residenceVillage: residenceAddress.areaType === 'changhua' ? residenceAddress.village : '',
-                    actualVillage: actualEligibility.village,
-                    actualEligibilityStatus: actualEligibility.status,
-                    busEligibilityStatus: residenceEligibility.status,
-                    isPriorityBusVillage: residenceEligibility.isPriorityVillage,
                     updatedAt: now
                 };
                 const privateData = {
@@ -2641,21 +2626,12 @@
                     mobile,
                     parentName,
                     parentMobile,
-                    residenceAddr,
-                    commAddr,
-                    ...flattenAddressState('residence', residenceAddress),
-                    commSameAsResidence,
-                    ...flattenAddressState('comm', commAddress),
-                    actualVillage: actualEligibility.village,
-                    actualEligibilityStatus: actualEligibility.status,
-                    busEligibilityStatus: residenceEligibility.status,
-                    isPriorityBusVillage: residenceEligibility.isPriorityVillage,
                     updatedAt: now
                 };
                 try {
                     await setDoc(ctx.getDocRef('students_public', id), publicData, { merge: true });
                     await setDoc(ctx.getDocRef('students_private', id), privateData, { merge: true });
-                    await ctx.upsertParentQuerySummary(lookupKey, buildParentQuerySummary({ ...publicData, id }));
+                    await ctx.upsertParentQuerySummary(lookupKey, buildParentQuerySummary({ ...editFormData, ...publicData, id }));
                     ctx.showMessage('學生資料已更新');
                     setEditModalOpen(false);
                 } catch(err) { ctx.showMessage('更新失敗', 'error'); }
@@ -3598,25 +3574,6 @@
                                             </div>
                                         </div>
 
-                                        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
-                                            <h4 className="flex items-center text-sm font-bold text-gray-800"><i className="ph-fill ph-map-pin mr-2 text-lg text-indigo-600"></i>地址資料</h4>
-                                            <AddressFields
-                                                title="戶籍地址"
-                                                value={editFormData.residenceAddress || createAddressState()}
-                                                required={true}
-                                                addressRegions={ctx.appConfig.addressRegions}
-                                                onChange={residenceAddress => setEditFormData({...editFormData, residenceAddress})}
-                                            />
-                                            <AddressFields
-                                                title="通訊／實際居住地址"
-                                                value={editFormData.commAddress || createAddressState()}
-                                                sameAsResidence={editFormData.commSameAsResidence === true}
-                                                addressRegions={ctx.appConfig.addressRegions}
-                                                onSameAsResidenceChange={commSameAsResidence => setEditFormData({...editFormData, commSameAsResidence})}
-                                                required={editFormData.commSameAsResidence !== true}
-                                                onChange={commAddress => setEditFormData({...editFormData, commAddress})}
-                                            />
-                                        </div>
                                     </form>
                                 </div>
                                 <div className="p-4 border-t bg-gray-50 flex justify-end shrink-0">
