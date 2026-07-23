@@ -23,7 +23,7 @@
 
     <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, GoogleAuthProvider, signInWithCustomToken, signInAnonymously, signInWithRedirect, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, GoogleAuthProvider, signInWithCustomToken, signInAnonymously, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const { useState, useEffect, useMemo } = React;
@@ -4034,23 +4034,29 @@
 
             // 1. 初始化 Auth 與全域主控設定 (Master Config)
             useEffect(() => {
-                let initialized = false;
-                const unsubscribeAuth = onAuthStateChanged(auth, async activeUser => {
+                let disposed = false;
+                const unsubscribeAuth = onAuthStateChanged(auth, activeUser => {
+                    if (disposed) return;
                     setUser(activeUser);
-                    if (activeUser || initialized) return;
-                    initialized = true;
+                });
+                const initializeAuth = async () => {
                     try {
+                        // 先等 Google 跳轉登入完成，避免過早切回匿名家長身分而失去後台權限。
+                        await getRedirectResult(auth);
+                        if (disposed || auth.currentUser) return;
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             await signInWithCustomToken(auth, __initial_auth_token);
                         } else {
                             await signInAnonymously(auth);
                         }
                     } catch (e) {
+                        if (disposed) return;
                         console.error("Auth Error", e);
                         setSystemError("Firebase 登入失敗，請確認網路連線、Firebase Authentication 匿名登入，以及授權網域設定。");
                     }
-                });
-                return () => unsubscribeAuth();
+                };
+                initializeAuth();
+                return () => { disposed = true; unsubscribeAuth(); };
             }, []);
 
             // 後台權限直接由 Firebase 目前登入的 Google 帳號判定，不另存一份容易不同步的畫面狀態。
