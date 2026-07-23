@@ -1659,6 +1659,10 @@
             const [eligibilityReport, setEligibilityReport] = useState(null);
             const [eligibilityStatusFilter, setEligibilityStatusFilter] = useState('全部');
             const [parentQueryMigrationBusy, setParentQueryMigrationBusy] = useState(false);
+            const [reviewFilter, setReviewFilter] = useState('待人工確認');
+            const [historySessionId, setHistorySessionId] = useState('');
+            const [historyStudents, setHistoryStudents] = useState([]);
+            const [historyLoading, setHistoryLoading] = useState(false);
             const editDays = WEEKDAY_OPTIONS;
             const editShifts = SHIFT_OPTIONS;
 
@@ -1677,6 +1681,16 @@
                     ? eligibilityReport.results
                     : eligibilityReport.results.filter(row => row.status === eligibilityStatusFilter);
             }, [eligibilityReport, eligibilityStatusFilter]);
+            const getReviewGroup = (student) => {
+                if (student.busEligibilityStatus === '已確認符合') return '符合資格';
+                if (String(student.busEligibilityStatus || '').startsWith('不符合')) return '不符合資格';
+                return '待人工確認';
+            };
+            const reviewGroups = useMemo(() => ({
+                '符合資格': ctx.students.filter(s => getReviewGroup(s) === '符合資格'),
+                '待人工確認': ctx.students.filter(s => getReviewGroup(s) === '待人工確認'),
+                '不符合資格': ctx.students.filter(s => getReviewGroup(s) === '不符合資格')
+            }), [ctx.students]);
 
             const adminTabs = [
                 { id: 'dashboard', label: '總覽', icon: 'ph-chart-line-up' },
@@ -1686,7 +1700,9 @@
                 { id: 'students', label: '報名資料', icon: 'ph-users-three' },
                 { id: 'afternoon-loop', label: '環線', icon: 'ph-bus' },
                 { id: 'seating', label: '座位安排', icon: 'ph-grid-four' },
+                { id: 'review', label: '資格審核', icon: 'ph-seal-check' },
                 { id: 'eligibility-lab', label: '報名資格比對', icon: 'ph-test-tube' },
+                { id: 'history', label: '歷史期程', icon: 'ph-clock-counter-clockwise' },
                 { id: 'settings', label: '系統設定', icon: 'ph-shield-check' }
             ];
 
@@ -1716,6 +1732,36 @@
                     ...updates,
                     sessionId: ctx.masterConfig.activeSessionId
                 });
+            };
+
+            const updateManualEligibility = (student, status) => {
+                ctx.showConfirm(`確定將「${student.name || '此學生'}」標示為「${status}」嗎？`, async () => {
+                    const updated = { ...student, busEligibilityStatus: status, isPriorityBusVillage: status === '已確認符合', updatedAt: Date.now() };
+                    await setDoc(ctx.getDocRef('students_public', student.id), {
+                        busEligibilityStatus: updated.busEligibilityStatus,
+                        isPriorityBusVillage: updated.isPriorityBusVillage,
+                        updatedAt: updated.updatedAt
+                    }, { merge: true });
+                    if (student.lookupKey) await ctx.upsertParentQuerySummary(student.lookupKey, buildParentQuerySummary(updated));
+                    ctx.showMessage(`已更新為「${status}」`);
+                });
+            };
+
+            const loadHistorySession = async (sessionId) => {
+                setHistorySessionId(sessionId);
+                setHistoryStudents([]);
+                if (!sessionId) return;
+                setHistoryLoading(true);
+                try {
+                    const snap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'students_public'));
+                    const prefix = `${sessionId}_`;
+                    setHistoryStudents(snap.docs.filter(d => d.id.startsWith(prefix)).map(d => ({ ...d.data(), id: d.data().id || d.id.slice(prefix.length) })));
+                } catch (err) {
+                    console.error(err);
+                    ctx.showMessage('讀取歷史期程失敗，請確認 Firebase 權限', 'error');
+                } finally {
+                    setHistoryLoading(false);
+                }
             };
 
             const buildParentQueryIndex = async () => {
@@ -2622,13 +2668,26 @@
                             {adminTab === 'students' && '查看、篩選、匯出與編輯學生報名資料。'}
                             {adminTab === 'afternoon-loop' && '依本期連動題目建立環線候選名單，再分配環線 A 車或 B 車。'}
                             {adminTab === 'seating' && '安排各路線與環線 A、B 車的座位，並可匯出座位表。'}
+                            {adminTab === 'review' && '只在你按下確認時更新資格；不會自動移除任何既有座位。'}
                             {adminTab === 'eligibility-lab' && '以目前線上報名資料與本機 Excel 進行資格比對；不會寫入 Firebase。'}
+                            {adminTab === 'history' && '只讀查看舊期程資料，不會切換目前開放給家長填寫的期程。'}
                             {adminTab === 'settings' && '修改後台密碼、車長密碼，或執行危險操作。'}
                         </span></div>
                     </div>
 
                     {adminTab === 'afternoon-loop' && <AfternoonLoopPage ctx={ctx} />}
                     {adminTab === 'seating' && <SeatingPage ctx={ctx} />}
+
+                    {adminTab === 'review' && (
+                        <div className="space-y-5">
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">{Object.entries(reviewGroups).map(([label, list]) => <button type="button" key={label} onClick={() => setReviewFilter(label)} className={`rounded-xl border p-5 text-left shadow-sm transition ${reviewFilter === label ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100' : 'border-gray-200 bg-white hover:border-indigo-200'}`}><p className="text-sm font-bold text-gray-500">{label}</p><p className="mt-1 text-3xl font-black text-indigo-700">{list.length}</p><p className="mt-1 text-xs text-gray-500">{label === '符合資格' ? '可安排座位' : label === '待人工確認' ? '待你確認' : '暫不安排座位'}</p></button>)}</div>
+                            <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b bg-gray-50 p-4"><div><h3 className="font-bold text-gray-800">{reviewFilter}</h3><p className="mt-1 text-xs text-gray-500">已安排的早上座位不會被自動刪除。</p></div><div className="flex gap-2">{['符合資格','待人工確認','不符合資格'].map(label => <button type="button" key={label} onClick={() => setReviewFilter(label)} className={`rounded-full px-3 py-1.5 text-sm font-bold ${reviewFilter === label ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 ring-1 ring-gray-200'}`}>{label}</button>)}</div></div><div className="divide-y">{reviewGroups[reviewFilter].map(student => <div key={student.id} className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between"><div><p className="font-bold text-gray-900">{student.name || '未填姓名'} <span className="ml-1 text-sm font-normal text-gray-500">{student.class || '未填班級'} {student.seat ? `${student.seat} 號` : ''}</span></p><p className="mt-1 text-sm text-gray-600">{ctx.routes.find(r => r.id === student.routeId)?.name || '未指定路線'}｜{student.stopName || '未指定車站'}｜目前：{student.busEligibilityStatus || '待學務資料比對'}</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => updateManualEligibility(student, '已確認符合')} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-700">確認符合</button><button type="button" onClick={() => updateManualEligibility(student, '不符合資格')} className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-bold text-white hover:bg-rose-700">確認不符合</button><button type="button" onClick={() => updateManualEligibility(student, '待人工確認')} className="rounded-lg bg-amber-100 px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-200">維持待確認</button></div></div>)}{reviewGroups[reviewFilter].length === 0 && <div className="p-10 text-center text-sm text-gray-500">這個分類目前沒有學生。</div>}</div></div>
+                        </div>
+                    )}
+
+                    {adminTab === 'history' && (
+                        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-lg font-bold text-slate-800">歷史期程查看（唯讀）</h3><p className="mt-2 text-sm leading-6 text-slate-600">這裡只讀取舊期程的公開報名摘要，不會切換目前運作期程，也不能從這裡修改、刪除、安排座位或影響新學期報名。</p><div className="mt-5 flex flex-col gap-3 sm:flex-row"><select value={historySessionId} onChange={e => loadHistorySession(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2"><option value="">選擇要查看的舊期程</option>{(ctx.masterConfig?.sessions || []).filter(s => s.id !== ctx.masterConfig?.activeSessionId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>{historyLoading && <span className="self-center text-sm font-bold text-indigo-600">讀取中…</span>}</div>{historySessionId && !historyLoading && <div className="mt-6 overflow-hidden rounded-xl border border-slate-200"><div className="bg-slate-50 p-4 text-sm font-bold text-slate-700">共 {historyStudents.length} 位學生（唯讀）</div><div className="divide-y">{historyStudents.map(student => <div key={student.id} className="flex flex-wrap items-center justify-between gap-2 p-4"><div><b>{student.name || '未填姓名'}</b><span className="ml-2 text-sm text-slate-500">{student.class || ''} {student.seat ? `${student.seat} 號` : ''}</span><div className="mt-1 text-sm text-slate-600">{student.stopName || '未指定車站'}</div></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">{student.busEligibilityStatus || '資格審核中'}</span></div>)}{historyStudents.length === 0 && <div className="p-10 text-center text-sm text-slate-500">此期程沒有可查看的報名資料。</div>}</div></div>}</div>
+                    )}
 
                     {adminTab === 'eligibility-lab' && (
                         <div className="space-y-6">
