@@ -23,7 +23,7 @@
 
     <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, EmailAuthProvider, GoogleAuthProvider, linkWithCredential, signInWithCustomToken, signInAnonymously, signInWithEmailAndPassword, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, EmailAuthProvider, GoogleAuthProvider, linkWithCredential, signInWithCustomToken, signInAnonymously, signInWithEmailAndPassword, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const { useState, useEffect, useMemo } = React;
@@ -548,12 +548,15 @@
                 if (password.length < 6) return ctx.showMessage('請設定至少 6 碼的後台密碼', 'error');
                 setBusy(true);
                 try {
-                    // 僅在 Google 跳轉的同一個分頁短暫保留，回來後立即刪除並完成帳號連結。
-                    sessionStorage.setItem('schoolBusLinkPassword', JSON.stringify({ email, password }));
-                    await ctx.signInSchoolAdmin(email);
+                    const googleUser = await ctx.signInSchoolAdmin(email);
+                    await ctx.linkSchoolPassword(googleUser, email, password);
+                    setPassword('');
+                    setShowLoginModal(false);
+                    setCurrentPage('admin');
+                    ctx.showMessage('後台密碼設定完成，之後可直接用密碼登入');
                 } catch (err) {
-                    sessionStorage.removeItem('schoolBusLinkPassword');
                     ctx.showMessage(err.message || '無法開始設定後台密碼', 'error');
+                } finally {
                     setBusy(false);
                 }
             };
@@ -4080,14 +4083,6 @@
                 });
                 const initializeAuth = async () => {
                     try {
-                        // 先等 Google 跳轉登入完成，避免過早切回匿名家長身分而失去後台權限。
-                        await getRedirectResult(auth);
-                        const pendingPassword = sessionStorage.getItem('schoolBusLinkPassword');
-                        if (pendingPassword && auth.currentUser && isSchoolAdminEmail(auth.currentUser.email)) {
-                            sessionStorage.removeItem('schoolBusLinkPassword');
-                            const { email, password } = JSON.parse(pendingPassword);
-                            await linkWithCredential(auth.currentUser, EmailAuthProvider.credential(email, password));
-                        }
                         if (disposed || auth.currentUser) return;
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             await signInWithCustomToken(auth, __initial_auth_token);
@@ -4102,6 +4097,12 @@
                 };
                 initializeAuth();
                 return () => { disposed = true; unsubscribeAuth(); };
+            }, []);
+
+            useEffect(() => {
+                if (window.location.protocol === 'file:') {
+                    setSystemError('目前開啟的是電腦本機檔案，僅供預覽；老師後台登入請使用正式 HTTPS 網址，否則 Google／密碼登入無法可靠完成。');
+                }
             }, []);
 
             // 後台權限直接由 Firebase 目前登入的 Google 帳號判定，不另存一份容易不同步的畫面狀態。
@@ -4297,8 +4298,13 @@
             const signInSchoolAdmin = async (expectedEmail) => {
                 const provider = new GoogleAuthProvider();
                 provider.setCustomParameters({ login_hint: expectedEmail, hd: SCHOOL_ADMIN_DOMAIN });
-                // 使用同頁跳轉，避免部分瀏覽器將 Firebase 處理頁留成空白分頁。
-                await signInWithRedirect(auth, provider);
+                // Cloudflare Pages 與 firebaseapp.com 不同網域時，改用彈出視窗避免跳轉後被瀏覽器切回匿名身分。
+                const credential = await signInWithPopup(auth, provider);
+                if (!isSchoolAdminEmail(credential.user?.email)) {
+                    await signOut(auth);
+                    throw new Error(`請使用 ${SCHOOL_ADMIN_DOMAIN} 的學校公務帳號`);
+                }
+                return credential.user;
             };
             const signInSchoolPassword = async (email, password) => {
                 const credential = await signInWithEmailAndPassword(auth, email, password);
@@ -4306,6 +4312,10 @@
                     await signOut(auth);
                     throw new Error(`請使用 ${SCHOOL_ADMIN_DOMAIN} 的學校公務帳號`);
                 }
+            };
+            const linkSchoolPassword = async (googleUser, email, password) => {
+                if (!googleUser || !isSchoolAdminEmail(googleUser.email)) throw new Error('請先使用學校 Google 帳號確認身分');
+                await linkWithCredential(googleUser, EmailAuthProvider.credential(email, password));
             };
             const signOutAdmin = async () => {
                 await signOut(auth);
@@ -4380,7 +4390,7 @@
             }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, studentsPublic, studentsPrivate]);
 
             const canSeeRoster = isAdminLoggedIn || isCaptainLoggedIn;
-            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signInSchoolPassword, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, countPublicStudentsByRoute };
+            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signInSchoolPassword, linkSchoolPassword, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, countPublicStudentsByRoute };
 
             const renderContent = () => {
                 switch (currentPage) {
