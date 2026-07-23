@@ -23,7 +23,7 @@
 
     <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, GoogleAuthProvider, signInWithCustomToken, signInAnonymously, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, EmailAuthProvider, GoogleAuthProvider, linkWithCredential, signInWithCustomToken, signInAnonymously, signInWithEmailAndPassword, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const { useState, useEffect, useMemo } = React;
@@ -503,6 +503,7 @@
 
         const LoginModal = ({ ctx, showLoginModal, setShowLoginModal, setCurrentPage }) => {
             const [account, setAccount] = useState('');
+            const [password, setPassword] = useState('');
             const [busy, setBusy] = useState(false);
             if (!showLoginModal) return null;
             const handleLogin = async (e) => {
@@ -520,14 +521,52 @@
                     setBusy(false);
                 }
             };
+            const handlePasswordLogin = async (e) => {
+                e.preventDefault();
+                const email = normalizeSchoolAdminEmail(account);
+                if (!isSchoolAdminEmail(email)) return ctx.showMessage(`請輸入 ${SCHOOL_ADMIN_DOMAIN} 的學校公務帳號`, 'error');
+                if (!password) return ctx.showMessage('請輸入後台密碼', 'error');
+                setBusy(true);
+                try {
+                    await ctx.signInSchoolPassword(email, password);
+                    setPassword('');
+                    setShowLoginModal(false);
+                    setCurrentPage('admin');
+                } catch (err) {
+                    const code = String(err?.code || '');
+                    const text = code.includes('invalid-credential') || code.includes('wrong-password') || code.includes('user-not-found')
+                        ? '帳號或後台密碼不正確'
+                        : (err.message || '後台密碼登入失敗');
+                    ctx.showMessage(text, 'error');
+                } finally {
+                    setBusy(false);
+                }
+            };
+            const handleSetPassword = async () => {
+                const email = normalizeSchoolAdminEmail(account);
+                if (!isSchoolAdminEmail(email)) return ctx.showMessage(`請先輸入 ${SCHOOL_ADMIN_DOMAIN} 的學校公務帳號`, 'error');
+                if (password.length < 6) return ctx.showMessage('請設定至少 6 碼的後台密碼', 'error');
+                setBusy(true);
+                try {
+                    // 僅在 Google 跳轉的同一個分頁短暫保留，回來後立即刪除並完成帳號連結。
+                    sessionStorage.setItem('schoolBusLinkPassword', JSON.stringify({ email, password }));
+                    await ctx.signInSchoolAdmin(email);
+                } catch (err) {
+                    sessionStorage.removeItem('schoolBusLinkPassword');
+                    ctx.showMessage(err.message || '無法開始設定後台密碼', 'error');
+                    setBusy(false);
+                }
+            };
             return (
                 <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
                     <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden p-6">
-                        <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">學校帳號登入</h3><button onClick={() => setShowLoginModal(false)}><i className="ph-bold ph-x text-xl"></i></button></div>
-                        <form onSubmit={handleLogin} className="space-y-4">
-                            <div><label className="mb-1 block text-sm font-bold text-gray-700">學校公務帳號</label><div className="flex overflow-hidden rounded-xl border focus-within:ring-2 focus-within:ring-indigo-500"><input autoFocus type="text" value={account} onChange={e => setAccount(e.target.value)} className="min-w-0 flex-1 px-4 py-3 outline-none" /><span className="shrink-0 bg-gray-100 px-3 py-3 text-sm text-gray-600">@{SCHOOL_ADMIN_DOMAIN}</span></div><p className="mt-2 text-xs leading-5 text-gray-500">輸入帳號前段後，會由 Google 確認學校帳號身分。</p></div>
-                            <button type="submit" disabled={busy} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 disabled:bg-gray-400">{busy ? '正在連線…' : '使用學校 Google 帳號登入'}</button>
-                        </form>
+                        <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">老師後台登入</h3><button onClick={() => setShowLoginModal(false)}><i className="ph-bold ph-x text-xl"></i></button></div>
+                        <div className="space-y-4">
+                            <div><label className="mb-1 block text-sm font-bold text-gray-700">學校公務帳號</label><div className="flex overflow-hidden rounded-xl border focus-within:ring-2 focus-within:ring-indigo-500"><input autoFocus type="text" value={account} onChange={e => setAccount(e.target.value)} className="min-w-0 flex-1 px-4 py-3 outline-none" /><span className="shrink-0 bg-gray-100 px-3 py-3 text-sm text-gray-600">@{SCHOOL_ADMIN_DOMAIN}</span></div></div>
+                            <form onSubmit={handlePasswordLogin} className="space-y-3 rounded-xl border border-indigo-100 bg-indigo-50 p-3"><label className="block text-sm font-bold text-indigo-950">方式一：後台密碼</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full rounded-lg border px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500" placeholder="輸入後台密碼" /><button type="submit" disabled={busy} className="w-full rounded-lg bg-indigo-600 py-2.5 font-bold text-white hover:bg-indigo-700 disabled:bg-gray-400">{busy ? '正在登入…' : '使用後台密碼登入'}</button><button type="button" onClick={handleSetPassword} disabled={busy} className="w-full text-sm font-bold text-indigo-700 hover:text-indigo-900 disabled:text-gray-400">第一次使用：設定這組後台密碼</button></form>
+                            <div className="flex items-center gap-3 text-xs text-gray-400"><div className="h-px flex-1 bg-gray-200"></div><span>或</span><div className="h-px flex-1 bg-gray-200"></div></div>
+                            <button type="button" onClick={handleLogin} disabled={busy} className="w-full rounded-xl border border-gray-300 py-2.5 font-bold text-gray-700 hover:bg-gray-50 disabled:bg-gray-100">使用學校 Google 帳號登入</button>
+                        </div>
                     </div>
                 </div>
             );
@@ -4043,6 +4082,12 @@
                     try {
                         // 先等 Google 跳轉登入完成，避免過早切回匿名家長身分而失去後台權限。
                         await getRedirectResult(auth);
+                        const pendingPassword = sessionStorage.getItem('schoolBusLinkPassword');
+                        if (pendingPassword && auth.currentUser && isSchoolAdminEmail(auth.currentUser.email)) {
+                            sessionStorage.removeItem('schoolBusLinkPassword');
+                            const { email, password } = JSON.parse(pendingPassword);
+                            await linkWithCredential(auth.currentUser, EmailAuthProvider.credential(email, password));
+                        }
                         if (disposed || auth.currentUser) return;
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             await signInWithCustomToken(auth, __initial_auth_token);
@@ -4255,6 +4300,13 @@
                 // 使用同頁跳轉，避免部分瀏覽器將 Firebase 處理頁留成空白分頁。
                 await signInWithRedirect(auth, provider);
             };
+            const signInSchoolPassword = async (email, password) => {
+                const credential = await signInWithEmailAndPassword(auth, email, password);
+                if (!isSchoolAdminEmail(credential.user?.email)) {
+                    await signOut(auth);
+                    throw new Error(`請使用 ${SCHOOL_ADMIN_DOMAIN} 的學校公務帳號`);
+                }
+            };
             const signOutAdmin = async () => {
                 await signOut(auth);
                 setIsCaptainLoggedIn(false);
@@ -4328,7 +4380,7 @@
             }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, studentsPublic, studentsPrivate]);
 
             const canSeeRoster = isAdminLoggedIn || isCaptainLoggedIn;
-            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, countPublicStudentsByRoute };
+            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signInSchoolPassword, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, countPublicStudentsByRoute };
 
             const renderContent = () => {
                 switch (currentPage) {
