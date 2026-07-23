@@ -4018,7 +4018,6 @@
             const [systemError, setSystemError] = useState(null);
 
             const [currentPage, setCurrentPage] = useState('register');
-            const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
             const [isCaptainLoggedIn, setIsCaptainLoggedIn] = useState(false);
             const [showLoginModal, setShowLoginModal] = useState(false);
             const [message, setMessage] = useState(null);
@@ -4054,15 +4053,15 @@
                 return () => unsubscribeAuth();
             }, []);
 
+            // 後台權限直接由 Firebase 目前登入的 Google 帳號判定，不另存一份容易不同步的畫面狀態。
+            const isAdminLoggedIn = isSchoolAdminEmail(user?.email);
+
             useEffect(() => {
-                // Google 已完成登入即可依學校網域辨識；部分校務帳號不會回傳 emailVerified 標記。
-                const isSchoolAdmin = isSchoolAdminEmail(user?.email);
-                setIsAdminLoggedIn(isSchoolAdmin);
-                if (isSchoolAdmin) {
+                if (isAdminLoggedIn) {
                     setIsCaptainLoggedIn(true);
                     setCurrentPage('admin');
                 }
-            }, [user]);
+            }, [isAdminLoggedIn]);
 
             // 讀取主控設定，強制鎖定在 appId 的合法路徑下
             useEffect(() => {
@@ -4252,7 +4251,6 @@
             };
             const signOutAdmin = async () => {
                 await signOut(auth);
-                setIsAdminLoggedIn(false);
                 setIsCaptainLoggedIn(false);
                 // 登出後立即回到家長可使用的匿名身分，避免同一台電腦的家長頁面無法載入資料。
                 await signInAnonymously(auth);
@@ -4324,7 +4322,7 @@
             }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, studentsPublic, studentsPrivate]);
 
             const canSeeRoster = isAdminLoggedIn || isCaptainLoggedIn;
-            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, setIsAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, countPublicStudentsByRoute };
+            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, countPublicStudentsByRoute };
 
             const renderContent = () => {
                 switch (currentPage) {
