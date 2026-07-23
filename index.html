@@ -51,6 +51,9 @@
         const DEFAULT_SURVEY_DESCRIPTION = '請依本期實際狀況選擇。若下午活動、營隊或返校交通尚未確定，可先選「尚不確定」，並在備註欄補充。';
         const DEFAULT_RETURN_OPTIONS = ['12:00 暑期輔導放學後搭校車', '參加下午活動／營隊，需要學校安排加開車', '目前尚不確定，待活動名單確認後再補填', '不搭放學車'];
         const DEFAULT_SURVEY_NOTE_LABEL = '下午活動名稱或備註（選填）';
+        const DEFAULT_CLASS_FIELD_PLACEHOLDER = '例如：701、808、911';
+        const DEFAULT_CLASS_FIELD_HELP_TEXT = '請使用七、八、九年級三碼格式。';
+        const DEFAULT_CLASS_FIELD_VALIDATION_TEXT = '班級請填 701、808、911 這類三碼格式';
         const DEFAULT_SURVEY_QUESTIONS = [{
             id: 'traffic-need',
             title: DEFAULT_SURVEY_TITLE,
@@ -657,6 +660,9 @@
             const days = [{val: 1, label: '週一'}, {val: 2, label: '週二'}, {val: 3, label: '週三'}, {val: 4, label: '週四'}, {val: 5, label: '週五'}];
             const selectedRoute = ctx.activeRoutes.find(r => r.id === formData.routeId);
             const registrationNotice = (!ctx.appConfig.registrationNotice || ctx.appConfig.registrationNotice === LEGACY_REGISTRATION_NOTICE) ? DEFAULT_REGISTRATION_NOTICE : ctx.appConfig.registrationNotice;
+            const classFieldPlaceholder = ctx.appConfig.classFieldPlaceholder || DEFAULT_CLASS_FIELD_PLACEHOLDER;
+            const classFieldHelpText = ctx.appConfig.classFieldHelpText || DEFAULT_CLASS_FIELD_HELP_TEXT;
+            const classFieldValidationText = ctx.appConfig.classFieldValidationText || DEFAULT_CLASS_FIELD_VALIDATION_TEXT;
             const surveyQuestions = buildSurveyQuestions(ctx.appConfig);
             const registrationDeadline = ctx.appConfig.registrationDeadline || '';
             const hasRegistrationDeadline = !!registrationDeadline;
@@ -681,8 +687,8 @@
                     return ctx.showMessage('目前報名表已關閉，無法送出資料', 'error');
                 }
                 const normalizedClass = String(formData.class || '').trim();
-                if (!(normalizedClass === '新生' || /^[789]\d{2}$/.test(normalizedClass))) {
-                    return ctx.showMessage('班級請填 701、808、911 這類三碼格式；尚未編班的七年級請填「新生」', 'error');
+                if (!/^[789]\d{2}$/.test(normalizedClass)) {
+                    return ctx.showMessage(classFieldValidationText, 'error');
                 }
 
                 const lookupKey = await buildLookupKey(formData.parentName, formData.parentMobile);
@@ -808,7 +814,7 @@
                                 <div className="space-y-4 md:col-span-2">
                                     <h3 className="text-sm font-semibold text-indigo-600 border-l-4 border-indigo-600 pl-2">基本與聯絡資料</h3>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                        <div><label className="block text-xs text-gray-500 mb-1">班級</label><input required type="text" pattern="(?:[789][0-9]{2}|新生)" title="請填 701、808、911 這類三碼格式；尚未編班請填新生" placeholder="例如：701、808、911；未編班填新生" value={formData.class} onChange={e => setFormData({...formData, class: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /><p className="mt-1 text-[11px] leading-4 text-indigo-600">請使用七、八、九年級格式；七年級尚未編班請填「新生」。</p></div>
+                                        <div><label className="block text-xs text-gray-500 mb-1">班級</label><input required type="text" pattern="[789][0-9]{2}" title={classFieldValidationText} placeholder={classFieldPlaceholder} value={formData.class} onChange={e => setFormData({...formData, class: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 outline-none" /><p className="mt-1 text-[11px] leading-4 text-indigo-600">{classFieldHelpText}</p></div>
                                         <div className="grid grid-cols-2 gap-3">
                                             <div><label className="block text-xs text-gray-500 mb-1">學號</label><input required type="text" placeholder="學號" value={formData.sid} onChange={e => setFormData({...formData, sid: e.target.value})} className="w-full min-w-0 px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
                                             <div><label className="block text-xs text-gray-500 mb-1">座號</label><input required type="number" placeholder="座號" value={formData.seat} onChange={e => setFormData({...formData, seat: e.target.value})} className="w-full min-w-0 px-3 py-2 border rounded-lg focus:ring-2 outline-none" /></div>
@@ -2101,16 +2107,22 @@
                 e.preventDefault();
                 const notice = e.target.registrationNotice.value.trim();
                 if (!notice) return ctx.showMessage('請輸入報名表說明文字', 'error');
+                const classFieldPlaceholder = e.target.classFieldPlaceholder.value.trim() || DEFAULT_CLASS_FIELD_PLACEHOLDER;
+                const classFieldHelpText = e.target.classFieldHelpText.value.trim() || DEFAULT_CLASS_FIELD_HELP_TEXT;
+                const classFieldValidationText = e.target.classFieldValidationText.value.trim() || DEFAULT_CLASS_FIELD_VALIDATION_TEXT;
                 const surveyQuestions = sanitizeSurveyQuestions(surveyDrafts);
                 if (surveyQuestions.length !== surveyDrafts.length) return ctx.showMessage('每個題目都需要標題，且至少要有一個選項', 'error');
                 await updateSessionFormConfig({
                     registrationNotice: notice,
+                    classFieldPlaceholder,
+                    classFieldHelpText,
+                    classFieldValidationText,
                     registrationClosed: e.target.registrationClosed.checked,
                     registrationDeadline: e.target.registrationDeadline.value,
                     surveyQuestions,
                     surveyQuestionsConfigured: true
                 });
-                ctx.showMessage('報名表說明與自訂調查題目已更新');
+                ctx.showMessage('報名表說明、班級提示與自訂調查題目已更新');
             };
 
             const handleUpdateRollCallPeriod = async (e) => {
@@ -2946,6 +2958,15 @@
                                     rows="4"
                                     className="w-full rounded-lg border px-3 py-2 text-sm leading-6 focus:ring-2 focus:ring-blue-500 outline-none"
                                 />
+                            </div>
+                            <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4">
+                                <h4 className="font-bold text-indigo-900">班級欄位說明</h4>
+                                <p className="mt-1 text-xs leading-5 text-indigo-700">這三段文字會顯示在學生報名表的「班級」欄位。班級格式仍固定為 701、808、911 這類三碼格式。</p>
+                                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                                    <div><label className="block text-xs font-bold text-indigo-800 mb-1">輸入框提示</label><input name="classFieldPlaceholder" defaultValue={ctx.appConfig.classFieldPlaceholder || DEFAULT_CLASS_FIELD_PLACEHOLDER} className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></div>
+                                    <div><label className="block text-xs font-bold text-indigo-800 mb-1">欄位下方說明</label><input name="classFieldHelpText" defaultValue={ctx.appConfig.classFieldHelpText || DEFAULT_CLASS_FIELD_HELP_TEXT} className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></div>
+                                    <div><label className="block text-xs font-bold text-indigo-800 mb-1">填錯時提示</label><input name="classFieldValidationText" defaultValue={ctx.appConfig.classFieldValidationText || DEFAULT_CLASS_FIELD_VALIDATION_TEXT} className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></div>
+                                </div>
                             </div>
                             <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
                                 <h4 className="mb-3 flex items-center font-bold text-amber-800">
