@@ -4055,7 +4055,8 @@
             }, []);
 
             useEffect(() => {
-                const isSchoolAdmin = user?.emailVerified === true && isSchoolAdminEmail(user.email);
+                // Google 已完成登入即可依學校網域辨識；部分校務帳號不會回傳 emailVerified 標記。
+                const isSchoolAdmin = isSchoolAdminEmail(user?.email);
                 setIsAdminLoggedIn(isSchoolAdmin);
                 if (isSchoolAdmin) {
                     setIsCaptainLoggedIn(true);
