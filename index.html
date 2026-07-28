@@ -2798,6 +2798,20 @@
                 downloadTextFile(csv, fileName, 'text/csv;charset=utf-8;');
             };
 
+            // 供「本機資格比對工具」使用：固定為單一表頭，不輸出地址等不必要個資。
+            const exportEligibilityComparisonCsv = () => {
+                const headers = ['期程ID','校車系統學生編號','學號','班級','座號','姓名','出生日期','監護人','家長電話','路線','車站'];
+                const escapeCsv = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
+                const currentSessionId = ctx.masterConfig?.activeSessionId || '';
+                const rows = ctx.students.map(s => [
+                    currentSessionId, s.id || '', s.sid || '', s.class || '', s.seat || '', s.name || '',
+                    normalizeBirthDate(s.birthDate), s.parentName || '', s.parentMobile || '',
+                    ctx.routes.find(r => r.id === s.routeId)?.name || '', s.stopName || ''
+                ]);
+                const csv = '\uFEFF' + [headers, ...rows].map(row => row.map(escapeCsv).join(',')).join('\n');
+                downloadTextFile(csv, `${safeFileName(currentSessionName)}_資格比對專用_${getLocalDateString()}.csv`, 'text/csv;charset=utf-8;');
+            };
+
             const exportToPDF = () => {
                 const element = document.getElementById('pdf-export-container');
                 if(!element) return;
@@ -3392,6 +3406,7 @@
                                 <span className="ml-2 bg-indigo-200 text-indigo-800 px-3 py-1 rounded-full text-xs">{visibleStudents.length} 人</span>
                             </div>
                             <div className="flex gap-2">
+                                <button onClick={exportEligibilityComparisonCsv} className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded text-sm flex items-center transition shadow-sm"><i className="ph-bold ph-check-circle mr-1"></i> 匯出資格比對 CSV</button>
                                 <button onClick={exportToExcel} className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm flex items-center transition shadow-sm"><i className="ph-bold ph-microsoft-excel-logo mr-1"></i> 匯出 Excel</button>
                                 <button onClick={exportToPDF} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-sm flex items-center transition shadow-sm"><i className="ph-bold ph-file-pdf mr-1"></i> 匯出 PDF</button>
                             </div>
