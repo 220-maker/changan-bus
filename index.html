@@ -1762,7 +1762,7 @@
                 if (row.some(value => String(value).trim())) rows.push(row);
                 if (rows.length < 2) throw new Error('CSV 沒有可讀取的比對結果');
                 const headers = rows[0].map(value => String(value).trim());
-                return rows.slice(1).map(values => Object.fromEntries(headers.map((header, index) => [header, String(values[index] || '').trim()))));
+                return rows.slice(1).map(values => Object.fromEntries(headers.map((header, index) => [header, String(values[index] || '').trim()])));
             };
             const mapImportedEligibilityStatus = (status) => {
                 if (status === '已確認符合') return '已確認符合';
