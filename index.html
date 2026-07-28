@@ -98,16 +98,6 @@
         const PRIORITY_BUS_VILLAGES = ['東芳里', '莿桐里', '磚磘里', '南安里'];
         const normalizeMatchText = (value) => String(value || '').trim().replace(/\s+/g, '').replace(/[（）()－—–-]/g, '');
         const normalizeAddressForCompare = (value) => PRIORITY_BUS_VILLAGES.reduce((text, village) => text.split(village).join(''), normalizeMatchText(value));
-        // 戶籍地址常含「○○里／○○鄰」，居住地址可能省略里鄰；只移除里鄰標記後做完整門牌比對。
-        const ADDRESS_VILLAGE_PATTERN = new RegExp(`(?:${CHANGHUA_CITY_VILLAGES.map(village => village.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')).join('|')})`, 'g');
-        const normalizeAddressCore = (value) => normalizeMatchText(value)
-            .replace(ADDRESS_VILLAGE_PATTERN, '')
-            .replace(/\d{1,3}鄰/g, '');
-        const isSameAddressCore = (left, right) => {
-            const a = normalizeAddressCore(left);
-            const b = normalizeAddressCore(right);
-            return Boolean(a && b && a === b);
-        };
         const getPriorityVillageFromAddress = (value) => PRIORITY_BUS_VILLAGES.find(village => String(value || '').includes(village)) || '';
         const createAddressState = () => ({
             areaType: 'changhua',
@@ -1716,6 +1706,9 @@
             const [eligibilityLabBusy, setEligibilityLabBusy] = useState(false);
             const [eligibilityReport, setEligibilityReport] = useState(null);
             const [eligibilityStatusFilter, setEligibilityStatusFilter] = useState('全部');
+            const [eligibilityImportFile, setEligibilityImportFile] = useState(null);
+            const [eligibilityImportPreview, setEligibilityImportPreview] = useState(null);
+            const [eligibilityImportBusy, setEligibilityImportBusy] = useState(false);
             const [parentQueryMigrationBusy, setParentQueryMigrationBusy] = useState(false);
             const [reviewFilter, setReviewFilter] = useState('待人工確認');
             const [historySessionId, setHistorySessionId] = useState('');
@@ -1746,6 +1739,99 @@
                 if (student.busEligibilityStatus === '已確認符合') return '符合資格';
                 if (String(student.busEligibilityStatus || '').startsWith('不符合')) return '不符合資格';
                 return '待人工確認';
+            };
+            const parseEligibilityCsv = (text) => {
+                const rows = [];
+                let row = [], cell = '', quoted = false;
+                const source = String(text || '').replace(/^\uFEFF/, '');
+                for (let i = 0; i < source.length; i += 1) {
+                    const char = source[i];
+                    if (char === '"') {
+                        if (quoted && source[i + 1] === '"') { cell += '"'; i += 1; }
+                        else quoted = !quoted;
+                    } else if (char === ',' && !quoted) {
+                        row.push(cell); cell = '';
+                    } else if ((char === '\n' || char === '\r') && !quoted) {
+                        if (char === '\r' && source[i + 1] === '\n') i += 1;
+                        row.push(cell); cell = '';
+                        if (row.some(value => String(value).trim())) rows.push(row);
+                        row = [];
+                    } else cell += char;
+                }
+                row.push(cell);
+                if (row.some(value => String(value).trim())) rows.push(row);
+                if (rows.length < 2) throw new Error('CSV 沒有可讀取的比對結果');
+                const headers = rows[0].map(value => String(value).trim());
+                return rows.slice(1).map(values => Object.fromEntries(headers.map((header, index) => [header, String(values[index] || '').trim()))));
+            };
+            const mapImportedEligibilityStatus = (status) => {
+                if (status === '已確認符合') return '已確認符合';
+                if (status === '不符合指定里') return '不符合資格';
+                return '待人工確認';
+            };
+            const previewEligibilityImport = async (file) => {
+                setEligibilityImportFile(file || null);
+                setEligibilityImportPreview(null);
+                if (!file) return;
+                try {
+                    const rows = parseEligibilityCsv(await file.text());
+                    const activeSessionId = ctx.masterConfig?.activeSessionId || '';
+                    const studentById = new Map(ctx.students.map(student => [student.id, student]));
+                    const seen = new Set();
+                    const invalidRows = [];
+                    const results = [];
+                    rows.forEach((row, index) => {
+                        const rowNumber = index + 2;
+                        const sessionId = row['期程ID'] || '';
+                        const studentId = row['校車系統學生編號'] || '';
+                        const importedStatus = row['比對結果'] || row['資格判定'] || '';
+                        if (!studentId) return invalidRows.push(`第 ${rowNumber} 列缺少「校車系統學生編號」`);
+                        if (!sessionId) return invalidRows.push(`第 ${rowNumber} 列缺少「期程ID」`);
+                        if (sessionId !== activeSessionId) return invalidRows.push(`第 ${rowNumber} 列不是目前期程的結果`);
+                        if (seen.has(studentId)) return invalidRows.push(`第 ${rowNumber} 列的學生重複出現`);
+                        seen.add(studentId);
+                        const student = studentById.get(studentId);
+                        if (!student) return invalidRows.push(`第 ${rowNumber} 列找不到對應的目前報名學生`);
+                        if (!importedStatus) return invalidRows.push(`第 ${rowNumber} 列缺少「比對結果」`);
+                        results.push({
+                            student,
+                            nextStatus: mapImportedEligibilityStatus(importedStatus),
+                            importedStatus,
+                            note: row['說明'] || ''
+                        });
+                    });
+                    const summary = results.reduce((counts, row) => ({ ...counts, [getReviewGroup({ busEligibilityStatus: row.nextStatus })]: (counts[getReviewGroup({ busEligibilityStatus: row.nextStatus })] || 0) + 1 }), { '符合資格': 0, '待人工確認': 0, '不符合資格': 0 });
+                    setEligibilityImportPreview({ fileName: file.name, results, invalidRows, summary });
+                } catch (err) {
+                    ctx.showMessage(`CSV 讀取失敗：${err.message || '請確認檔案格式'}`, 'error');
+                    setEligibilityImportFile(null);
+                }
+            };
+            const applyEligibilityImport = () => {
+                if (!eligibilityImportPreview?.results?.length) return;
+                ctx.showConfirm(`確定套用 ${eligibilityImportPreview.results.length} 筆資格分類嗎？只會更新資格狀態，不會更動學生報名內容、路線或任何早上座位。`, async () => {
+                    setEligibilityImportBusy(true);
+                    try {
+                        const now = Date.now();
+                        for (const row of eligibilityImportPreview.results) {
+                            const updated = { ...row.student, busEligibilityStatus: row.nextStatus, isPriorityBusVillage: row.nextStatus === '已確認符合', updatedAt: now };
+                            await setDoc(ctx.getDocRef('students_public', row.student.id), {
+                                busEligibilityStatus: updated.busEligibilityStatus,
+                                isPriorityBusVillage: updated.isPriorityBusVillage,
+                                updatedAt: updated.updatedAt
+                            }, { merge: true });
+                            if (updated.lookupKey) await ctx.upsertParentQuerySummary(updated.lookupKey, buildParentQuerySummary(updated));
+                        }
+                        ctx.showMessage(`已套用 ${eligibilityImportPreview.results.length} 筆資格分類；沒有變更任何座位。`);
+                        setEligibilityImportFile(null);
+                        setEligibilityImportPreview(null);
+                    } catch (err) {
+                        console.error(err);
+                        ctx.showMessage('套用資格分類失敗，請確認 Firebase 權限', 'error');
+                    } finally {
+                        setEligibilityImportBusy(false);
+                    }
+                });
             };
             const reviewGroups = useMemo(() => ({
                 '符合資格': ctx.students.filter(s => getReviewGroup(s) === '符合資格'),
@@ -1923,10 +2009,10 @@
                         const sameName = roster.filter(row => normalizeMatchText(row.name) === normalizeMatchText(studentName));
                         const sameStudentId = studentSid ? roster.filter(row => normalizeMatchText(row.sid) === normalizeMatchText(studentSid)) : [];
                         const nameAndBirthDate = studentBirthDate ? sameName.filter(row => row.birthDate === studentBirthDate) : [];
-                        const guardianNameMatchesRow = row => Boolean(parentName) && [row.fatherName, row.motherName]
-                            .some(name => normalizeMatchText(name) === normalizeMatchText(parentName));
-                        const nameBirthAndParent = nameAndBirthDate.filter(guardianNameMatchesRow);
-                        const parentMatches = sameName.filter(guardianNameMatchesRow);
+                        const parentMatches = sameName.filter(row => [
+                            [row.fatherName, row.fatherMobile],
+                            [row.motherName, row.motherMobile]
+                        ].some(([name, mobile]) => normalizeMatchText(name) === normalizeMatchText(parentName) && normalizePhone(mobile) === normalizePhone(parentMobile) && normalizePhone(mobile)));
                         const idAndBirthDate = studentSid && studentBirthDate ? sameStudentId.filter(row => row.birthDate === studentBirthDate) : [];
                         let matchedRows = [];
                         let matchMethod = '';
@@ -1936,9 +2022,6 @@
                         } else if (sameStudentId.length === 1) {
                             matchedRows = sameStudentId;
                             matchMethod = '學號';
-                        } else if (nameBirthAndParent.length) {
-                            matchedRows = nameBirthAndParent;
-                            matchMethod = '姓名＋出生日期＋監護人姓名';
                         } else if (nameAndBirthDate.length) {
                             matchedRows = nameAndBirthDate;
                             matchMethod = '姓名＋出生日期';
@@ -1968,22 +2051,11 @@
 
                         const matched = matchedRows[0];
                         const birthDateNote = !studentBirthDate ? '家長尚未填出生日期' : !matched.birthDate ? 'Excel 未提供出生日期' : studentBirthDate === matched.birthDate ? '出生日期相符' : `出生日期不一致（Excel：${matched.birthDate}）`;
-                        const guardianNameMatches = Boolean(parentName) && [matched.fatherName, matched.motherName]
-                            .some(name => normalizeMatchText(name) === normalizeMatchText(parentName));
-                        if (!studentBirthDate || !matched.birthDate || studentBirthDate !== matched.birthDate) {
-                            return { ...base, status: '出生日期待確認', note: `${matchMethod}；${birthDateNote}；未符合「姓名＋出生日期」必要條件` };
-                        }
-                        if (!guardianNameMatches) {
-                            return { ...base, status: '監護人待確認', note: `${matchMethod}；出生日期相符；Excel 的父親或母親姓名與報名監護人不一致` };
-                        }
                         const residenceVillage = getPriorityVillageFromAddress(matched.residenceAddr);
                         const commVillage = getPriorityVillageFromAddress(matched.commAddr);
-                        const sameAddress = isSameAddressCore(matched.residenceAddr, matched.commAddr);
-                        // 居住地址省略里名時，僅在完整門牌核心與戶籍地址一致時沿用戶籍里別。
-                        const inferredCommVillage = !commVillage && sameAddress ? residenceVillage : '';
                         const hasVillage = /[\u4e00-\u9fff]{1,5}里/.test(`${matched.residenceAddr || ''}${matched.commAddr || ''}`);
-                        if (residenceVillage || commVillage || inferredCommVillage) {
-                            const sources = [residenceVillage && `戶籍地址：${residenceVillage}`, commVillage && `居住地址：${commVillage}`, inferredCommVillage && `居住地址與戶籍地址門牌一致，沿用戶籍里別：${inferredCommVillage}`].filter(Boolean).join('；');
+                        if (residenceVillage || commVillage) {
+                            const sources = [residenceVillage && `戶籍地址：${residenceVillage}`, commVillage && `通訊地址：${commVillage}`].filter(Boolean).join('；');
                             return { ...base, status: '已確認符合', note: `${matchMethod}；${birthDateNote}；${sources}，符合指定搭車里` };
                         }
                         if (hasVillage) return { ...base, status: '不符合指定里', note: `${matchMethod}；${birthDateNote}；戶籍或通訊地址已標示里別，但皆不在指定搭車里` };
@@ -2664,7 +2736,7 @@
                 const BOM = '\uFEFF';
                 const surveyQuestions = buildSurveyQuestions(ctx.appConfig);
                 const surveyHeaders = surveyQuestions.flatMap(q => [q.title, `${q.title}備註`]);
-                const headers = ["學號","班級","座號","姓名","性別","出生日期","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","戶籍里","戶籍校車資格","通訊／實際居住地址","實際居住里","實際居住資格"];
+                const headers = ["期程ID","校車系統學生編號","學號","班級","座號","姓名","性別","出生日期","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","戶籍里","戶籍校車資格","通訊／實際居住地址","實際居住里","實際居住資格"];
                 const escapeCsv = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
                 const buildStudentRow = (s) => {
                     const routeName = ctx.routes.find(r => r.id === s.routeId)?.name || '';
@@ -2674,7 +2746,7 @@
                         const note = s.surveyNotes?.[q.id] || (idx === 0 ? (s.returnNote || '') : '');
                         return [answer, note];
                     });
-                    return [s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', normalizeBirthDate(s.birthDate), routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.residenceVillage || '', s.busEligibilityStatus || '', s.commAddr || '', s.actualVillage || '', s.actualEligibilityStatus || ''];
+                    return [ctx.masterConfig?.activeSessionId || '', s.id || '', s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', normalizeBirthDate(s.birthDate), routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.residenceVillage || '', s.busEligibilityStatus || '', s.commAddr || '', s.actualVillage || '', s.actualEligibilityStatus || ''];
                 };
                 const sortForRoute = (list, route) => {
                     const stopOrder = route?.stops || [];
@@ -2775,6 +2847,21 @@
 
                     {adminTab === 'review' && (
                         <div className="space-y-5">
+                            <div className="rounded-xl border border-violet-200 bg-violet-50 p-5 shadow-sm">
+                                <h3 className="font-bold text-violet-900"><i className="ph-fill ph-upload-simple mr-2"></i>匯入本機比對結果</h3>
+                                <p className="mt-2 text-sm leading-6 text-violet-800">請上傳本機工具下載的「校車資格本機比對結果.csv」。系統會先預覽分類；只有按下確認套用後，才會更新資格狀態。Excel 原始資料、完整地址及家長電話不會上傳。</p>
+                                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                                    <input type="file" accept=".csv,text/csv" onChange={e => previewEligibilityImport(e.target.files?.[0] || null)} className="block w-full text-sm text-violet-900 file:mr-3 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:font-bold file:text-violet-800" />
+                                    {eligibilityImportFile && <span className="shrink-0 text-xs font-bold text-violet-700">已選擇：{eligibilityImportFile.name}</span>}
+                                </div>
+                                {eligibilityImportPreview && <div className="mt-4 space-y-3">
+                                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                        {['符合資格','待人工確認','不符合資格'].map(label => <div key={label} className="rounded-lg border border-violet-100 bg-white p-3"><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-1 text-2xl font-black text-violet-700">{eligibilityImportPreview.summary[label] || 0}</p></div>)}
+                                    </div>
+                                    {eligibilityImportPreview.invalidRows.length > 0 && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"><b>未套用的資料 {eligibilityImportPreview.invalidRows.length} 筆：</b><div className="mt-1 max-h-24 overflow-y-auto">{eligibilityImportPreview.invalidRows.join('；')}</div></div>}
+                                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-violet-100 bg-white p-3 text-sm text-slate-700"><span>可套用 {eligibilityImportPreview.results.length} 筆；不會變更報名內容、路線或早上座位。</span><button type="button" onClick={applyEligibilityImport} disabled={eligibilityImportPreview.results.length === 0 || eligibilityImportBusy} className="rounded-lg bg-violet-600 px-4 py-2 font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{eligibilityImportBusy ? '套用中…' : '確認套用分類'}</button></div>
+                                </div>}
+                            </div>
                             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">{Object.entries(reviewGroups).map(([label, list]) => <button type="button" key={label} onClick={() => setReviewFilter(label)} className={`rounded-xl border p-5 text-left shadow-sm transition ${reviewFilter === label ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100' : 'border-gray-200 bg-white hover:border-indigo-200'}`}><p className="text-sm font-bold text-gray-500">{label}</p><p className="mt-1 text-3xl font-black text-indigo-700">{list.length}</p><p className="mt-1 text-xs text-gray-500">{label === '符合資格' ? '可安排座位' : label === '待人工確認' ? '待你確認' : '暫不安排座位'}</p></button>)}</div>
                             <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b bg-gray-50 p-4"><div><h3 className="font-bold text-gray-800">{reviewFilter}</h3><p className="mt-1 text-xs text-gray-500">已安排的早上座位不會被自動刪除。</p></div><div className="flex gap-2">{['符合資格','待人工確認','不符合資格'].map(label => <button type="button" key={label} onClick={() => setReviewFilter(label)} className={`rounded-full px-3 py-1.5 text-sm font-bold ${reviewFilter === label ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 ring-1 ring-gray-200'}`}>{label}</button>)}</div></div><div className="divide-y">{reviewGroups[reviewFilter].map(student => <div key={student.id} className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between"><div><p className="font-bold text-gray-900">{student.name || '未填姓名'} <span className="ml-1 text-sm font-normal text-gray-500">{student.class || '未填班級'} {student.seat ? `${student.seat} 號` : ''}</span></p><p className="mt-1 text-sm text-gray-600">{ctx.routes.find(r => r.id === student.routeId)?.name || '未指定路線'}｜{student.stopName || '未指定車站'}｜目前：{student.busEligibilityStatus || '待學務資料比對'}</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => updateManualEligibility(student, '已確認符合')} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-700">確認符合</button><button type="button" onClick={() => updateManualEligibility(student, '不符合資格')} className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-bold text-white hover:bg-rose-700">確認不符合</button><button type="button" onClick={() => updateManualEligibility(student, '待人工確認')} className="rounded-lg bg-amber-100 px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-200">維持待確認</button></div></div>)}{reviewGroups[reviewFilter].length === 0 && <div className="p-10 text-center text-sm text-gray-500">這個分類目前沒有學生。</div>}</div></div>
                         </div>
