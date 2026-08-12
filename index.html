@@ -1695,6 +1695,7 @@
             const [newRouteForm, setNewRouteForm] = useState({ name: '', capacity: '43', stops: '' });
             const [surveyDrafts, setSurveyDrafts] = useState([]);
             const [studentRouteFilter, setStudentRouteFilter] = useState('all');
+            const [settingsSection, setSettingsSection] = useState('general');
             const [leaveFilter, setLeaveFilter] = useState({ keyword: '', date: '', routeId: 'all', shift: 'all' });
             const [editLeaveModalOpen, setEditLeaveModalOpen] = useState(false);
             const [editLeaveFormData, setEditLeaveFormData] = useState({});
@@ -1726,6 +1727,7 @@
 
             const visibleStudents = useMemo(() => {
                 if (studentRouteFilter === 'all') return ctx.students;
+                if (studentRouteFilter === 'afternoon-loop') return [];
                 return ctx.students.filter(s => s.routeId === studentRouteFilter);
             }, [ctx.students, studentRouteFilter]);
             const currentSessionName = getActiveSessionName(ctx.masterConfig);
@@ -1842,10 +1844,8 @@
             const adminTabs = [
                 { id: 'dashboard', label: '總覽', icon: 'ph-chart-line-up' },
                 { id: 'sessions', label: '期程與表單', icon: 'ph-folder-notch-open' },
-                { id: 'routes', label: '路線與站點', icon: 'ph-map-trifold' },
                 { id: 'leaves', label: '請假管理', icon: 'ph-calendar-check' },
                 { id: 'students', label: '報名資料', icon: 'ph-users-three' },
-                { id: 'afternoon-loop', label: '環線', icon: 'ph-bus' },
                 { id: 'seating', label: '座位安排', icon: 'ph-grid-four' },
                 { id: 'review', label: '資格審核', icon: 'ph-seal-check' },
                 { id: 'history', label: '歷史期程', icon: 'ph-clock-counter-clockwise' },
@@ -2169,15 +2169,6 @@
                     await updateSystemConfig({ rollCallPasswordHash: newHash });
                     e.target.pwd.value = ''; ctx.showMessage('車長點名密碼已更新');
                 } else { ctx.showMessage('密碼太短', 'error'); }
-            };
-
-            const handleUpdateAddressRegions = async (e) => {
-                e.preventDefault();
-                const regions = addressRegionsFromText(e.target.addressRegions.value);
-                if (regions.length === 0) return ctx.showMessage('請至少保留一筆縣市／鄉鎮市區設定', 'error');
-                await updateSystemConfig({ addressRegions: regions });
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'public'), { addressRegions: regions }, { merge: true });
-                ctx.showMessage('地址選項已更新；不會修改既有學生資料');
             };
 
             const sanitizeSurveyQuestions = (questions) => {
@@ -2845,18 +2836,19 @@
                         <div className="flex items-start gap-2 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm font-medium leading-6 text-indigo-800"><i className="ph-fill ph-info mt-0.5 text-lg text-indigo-500"></i><span>
                             {adminTab === 'dashboard' && '查看每日搭車預估與無故缺席提醒。'}
                             {adminTab === 'sessions' && '管理期程、報名表設定、報名截止時間與車長點名期間。'}
-                            {adminTab === 'routes' && '新增、隱藏、刪除路線，調整車站與人數上限。'}
                             {adminTab === 'leaves' && '查詢、修改或刪除家長送出的請假紀錄。'}
-                            {adminTab === 'students' && '查看、篩選、匯出與編輯學生報名資料。'}
-                            {adminTab === 'afternoon-loop' && '依本期連動題目建立環線候選名單，再分配環線 A 車或 B 車。'}
+                            {adminTab === 'students' && '查看、篩選、匯出與編輯學生報名資料；環線名單在各路線篩選的最後一項。'}
                             {adminTab === 'seating' && '安排各路線與環線 A、B 車的座位，並可匯出座位表。'}
                             {adminTab === 'review' && '只在你按下確認時更新資格；不會自動移除任何既有座位。'}
                             {adminTab === 'history' && '只讀查看舊期程資料，不會切換目前開放給家長填寫的期程。'}
-                            {adminTab === 'settings' && '修改後台密碼、車長密碼，或執行危險操作。'}
+                            {adminTab === 'settings' && (settingsSection === 'routes' ? '新增、隱藏、刪除路線，調整車站與人數上限。' : '修改後台密碼、車長密碼，或執行危險操作。')}
                         </span></div>
+                        {adminTab === 'settings' && <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-4">
+                            <button type="button" onClick={() => setSettingsSection('general')} className={`rounded-lg px-3 py-2 text-sm font-bold transition ${settingsSection === 'general' ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}><i className="ph-fill ph-gear mr-1"></i>一般設定</button>
+                            <button type="button" onClick={() => setSettingsSection('routes')} className={`rounded-lg px-3 py-2 text-sm font-bold transition ${settingsSection === 'routes' ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}><i className="ph-fill ph-map-trifold mr-1"></i>路線與站點</button>
+                        </div>}
                     </div>
 
-                    {adminTab === 'afternoon-loop' && <AfternoonLoopPage ctx={ctx} />}
                     {adminTab === 'seating' && <SeatingPage ctx={ctx} />}
 
                     {adminTab === 'review' && (
@@ -3180,7 +3172,7 @@
                         </form>
                     </div>
 
-                    <div className={`${adminTab === 'routes' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden`}>
+                    <div className={`${adminTab === 'settings' && settingsSection === 'routes' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden`}>
                         <div className="bg-indigo-50 p-4 border-b border-indigo-100 font-bold text-indigo-800 flex items-center">
                             <i className="ph-fill ph-map-trifold text-2xl mr-2"></i> 路線與車站管理
                         </div>
@@ -3402,14 +3394,14 @@
                     <div className={`${adminTab === 'students' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden`}>
                         <div className="bg-indigo-50 p-4 border-b border-indigo-100 font-bold text-indigo-800 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                             <div className="flex items-center">
-                                <span>{studentRouteFilter === 'all' ? '全部學生資料' : `${ctx.routes.find(r => r.id === studentRouteFilter)?.name || '指定路線'}學生資料`} (包含機密個資)</span>
-                                <span className="ml-2 bg-indigo-200 text-indigo-800 px-3 py-1 rounded-full text-xs">{visibleStudents.length} 人</span>
+                                <span>{studentRouteFilter === 'afternoon-loop' ? '環線調度資料' : studentRouteFilter === 'all' ? '全部學生資料' : `${ctx.routes.find(r => r.id === studentRouteFilter)?.name || '指定路線'}學生資料`} (包含機密個資)</span>
+                                <span className="ml-2 bg-indigo-200 text-indigo-800 px-3 py-1 rounded-full text-xs">{studentRouteFilter === 'afternoon-loop' ? `${ctx.afternoonLoopAssignments.filter(record => record.scheduleType === 'fixed' && record.included !== false).length} 人` : `${visibleStudents.length} 人`}</span>
                             </div>
-                            <div className="flex gap-2">
+                            {studentRouteFilter !== 'afternoon-loop' && <div className="flex gap-2">
                                 <button onClick={exportEligibilityComparisonCsv} className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded text-sm flex items-center transition shadow-sm"><i className="ph-bold ph-check-circle mr-1"></i> 匯出資格比對 CSV</button>
                                 <button onClick={exportToExcel} className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm flex items-center transition shadow-sm"><i className="ph-bold ph-microsoft-excel-logo mr-1"></i> 匯出 Excel</button>
                                 <button onClick={exportToPDF} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-sm flex items-center transition shadow-sm"><i className="ph-bold ph-file-pdf mr-1"></i> 匯出 PDF</button>
-                            </div>
+                            </div>}
                         </div>
                         <div className="border-b border-indigo-100 bg-white p-3 flex flex-wrap gap-2">
                             <button
@@ -3427,8 +3419,14 @@
                                     {route.name}{route.active === false ? '（已隱藏）' : ''}
                                 </button>
                             ))}
+                            <button
+                                onClick={() => setStudentRouteFilter('afternoon-loop')}
+                                className={`px-3 py-1.5 rounded-full text-sm font-bold border transition ${studentRouteFilter === 'afternoon-loop' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-600 border-gray-200 hover:border-indigo-300'}`}
+                            >
+                                <i className="ph-fill ph-bus mr-1"></i>環線
+                            </button>
                         </div>
-                        <div className="overflow-x-auto max-h-[500px]" id="pdf-export-container">
+                        {studentRouteFilter === 'afternoon-loop' ? <div className="p-4"><AfternoonLoopPage ctx={ctx} /></div> : <div className="overflow-x-auto max-h-[500px]" id="pdf-export-container">
                             <table className="w-full text-left text-sm whitespace-nowrap bg-white">
                                 <thead className="bg-gray-50 sticky top-0 border-b"><tr><th className="px-4 py-3">隊列排序</th><th className="px-4 py-3">基本資料</th><th className="px-4 py-3">路線與不搭車時段</th><th className="px-4 py-3">聯絡與地址資訊</th><th className="px-4 py-3 text-center html2pdf__page-break-avoid">操作</th></tr></thead>
                                 <tbody className="divide-y">
@@ -3472,10 +3470,10 @@
                                     ))}
                                 </tbody>
                             </table>
-                        </div>
+                        </div>}
                     </div>
 
-                    <div className={`${adminTab === 'settings' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden mt-8`}>
+                    <div className={`${adminTab === 'settings' && settingsSection === 'general' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden mt-8`}>
                         <div className="bg-gray-50 p-4 border-b border-gray-100 font-bold text-gray-700 flex items-center">
                             <i className="ph-fill ph-shield-check text-xl mr-2 text-indigo-600"></i> 系統安全與密碼設定
                         </div>
@@ -3504,14 +3502,6 @@
                                     <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition whitespace-nowrap">更新</button>
                                 </div>
                             </form>
-                            <form onSubmit={handleUpdateAddressRegions} className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
-                                <div>
-                                    <label className="text-sm font-bold text-amber-900">縣市／鄉鎮市區／里村選項</label>
-                                    <p className="mt-1 text-xs leading-5 text-amber-800">每行一個區域，格式：縣市｜鄉鎮市區｜里或村（里村之間用「、」分隔）。例如：彰化縣｜和美鎮｜和東里、和西里。</p>
-                                </div>
-                                <textarea name="addressRegions" defaultValue={addressRegionsToText(ctx.appConfig.addressRegions)} rows="7" className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-amber-500" />
-                                <button type="submit" className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700">儲存地址選項</button>
-                            </form>
                             <div className="md:col-span-2 rounded-xl border border-sky-200 bg-sky-50 p-4">
                                 <h4 className="font-bold text-sky-900">家長查詢資料整理</h4>
                                 <p className="mt-1 text-sm leading-6 text-sky-800">建立僅供家長以「監護人姓名＋手機」查詢的摘要。摘要保留家長原本可看到的報名內容與資格狀態，但不含地址、生日、電話；不會修改或刪除任何學生資料。</p>
@@ -3520,7 +3510,7 @@
                         </div>
                     </div>
 
-                    <div className={`${adminTab === 'settings' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-emerald-200 overflow-hidden mt-8`}>
+                    <div className={`${adminTab === 'settings' && settingsSection === 'general' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-emerald-200 overflow-hidden mt-8`}>
                         <div className="bg-emerald-50 p-4 border-b border-emerald-100 font-bold text-emerald-800 flex items-center">
                             <i className="ph-fill ph-floppy-disk text-xl mr-2 text-emerald-600"></i> 完整資料備份
                         </div>
@@ -3553,7 +3543,7 @@
                         </div>
                     </div>
 
-                    <div className={`${adminTab === 'settings' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-red-200 overflow-hidden mt-8`}>
+                    <div className={`${adminTab === 'settings' && settingsSection === 'general' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-red-200 overflow-hidden mt-8`}>
                         <div className="bg-red-50 p-4 border-b border-red-100 font-bold text-red-800 flex items-center">
                             <i className="ph-fill ph-warning-octagon text-xl mr-2 text-red-600"></i> 系統危險操作區域 (Danger Zone)
                         </div>
