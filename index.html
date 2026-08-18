@@ -1786,7 +1786,9 @@
                         const rowNumber = index + 2;
                         const sessionId = row['期程ID'] || '';
                         const studentId = row['校車系統學生編號'] || '';
-                        const importedStatus = row['比對結果'] || row['資格判定'] || '';
+                        // 同時支援舊版「比對結果」與新版本機工具輸出的「目前結果」。
+                        // 若已有人工覆核，應優先採用人工覆核結果。
+                        const importedStatus = row['人工覆核結果'] || row['目前結果'] || row['比對結果'] || row['資格判定'] || row['系統初判'] || '';
                         if (!studentId) return invalidRows.push(`第 ${rowNumber} 列缺少「校車系統學生編號」`);
                         if (!sessionId) return invalidRows.push(`第 ${rowNumber} 列缺少「期程ID」`);
                         if (sessionId !== activeSessionId) return invalidRows.push(`第 ${rowNumber} 列不是目前期程的結果`);
@@ -1794,7 +1796,7 @@
                         seen.add(studentId);
                         const student = studentById.get(studentId);
                         if (!student) return invalidRows.push(`第 ${rowNumber} 列找不到對應的目前報名學生`);
-                        if (!importedStatus) return invalidRows.push(`第 ${rowNumber} 列缺少「比對結果」`);
+                        if (!importedStatus) return invalidRows.push(`第 ${rowNumber} 列缺少可辨識的比對結果`);
                         results.push({
                             student,
                             nextStatus: mapImportedEligibilityStatus(importedStatus),
