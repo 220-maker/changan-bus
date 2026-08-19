@@ -321,6 +321,7 @@
             returnBus: student.returnBus || '',
             returnNote: student.returnNote || '',
             noRide: student.noRide || {},
+            assignedSeat: student.assignedSeat || null,
             busEligibilityStatus: student.busEligibilityStatus || '待學務資料比對',
             submittedAt: student.submittedAt || Date.now(),
             updatedAt: student.updatedAt || Date.now()
@@ -1062,6 +1063,10 @@
                                             <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm leading-6">
                                                 <div><span className="font-bold text-gray-500">班級座號：</span>{student.class || '未填班級'} 班 / {student.seat || '未填'} 號</div>
                                                 <div><span className="font-bold text-gray-500">搭車路線：</span>{routeName} - {student.stopName || '未填車站'}</div>
+                                                {student.busEligibilityStatus === '已確認符合' && (ctx.appConfig.seatAssignmentsPublished === true
+                                                    ? <div className="sm:col-span-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-indigo-900"><span className="font-bold">車上座位：</span>{student.assignedSeat ? `${student.assignedSeat.routeName || routeName}｜${student.assignedSeat.seatId || '已安排'}${student.assignedSeat.stopName ? `｜${student.assignedSeat.stopName}` : ''}` : '座位尚未安排，請留意學校後續通知。'}</div>
+                                                    : <div className="sm:col-span-2 rounded-lg bg-slate-50 px-3 py-2 text-slate-600"><span className="font-bold">車上座位：</span>尚未公告。</div>
+                                                )}
                                                 {questions.map((q, qIdx) => {
                                                     const answer = student.surveyAnswers?.[q.id] || (qIdx === 0 ? (student.returnBus || '') : '');
                                                     const note = student.surveyNotes?.[q.id] || (qIdx === 0 ? (student.returnNote || '') : '');
@@ -1952,6 +1957,7 @@
                     rollCallStartDate: ctx.appConfig.rollCallStartDate || '',
                     rollCallEndDate: ctx.appConfig.rollCallEndDate || '',
                     eligibilityResultsPublished: ctx.appConfig.eligibilityResultsPublished === true,
+                    seatAssignmentsPublished: ctx.appConfig.seatAssignmentsPublished === true,
                     ...updates,
                     sessionId: ctx.masterConfig.activeSessionId
                 });
@@ -1978,6 +1984,18 @@
                 ctx.showConfirm(message, async () => {
                     await updateSessionFormConfig({ eligibilityResultsPublished: next });
                     ctx.showMessage(next ? '已公告本期家長資格結果' : '已暫停公告本期家長資格結果');
+                });
+            };
+
+            const toggleSeatAssignmentsPublished = () => {
+                const next = ctx.appConfig.seatAssignmentsPublished !== true;
+                const message = next
+                    ? '公告後，已確認符合資格的家長可在查詢頁看到自己的車上座位；尚未排座者會看到「座位尚未安排」。確定公告嗎？'
+                    : '暫停後，家長將不再看到車上座位；後台座位安排不會改變。確定暫停嗎？';
+                ctx.showConfirm(message, async () => {
+                    if (next) await buildParentQueryIndex();
+                    await updateSessionFormConfig({ seatAssignmentsPublished: next });
+                    ctx.showMessage(next ? '已公告本期座位資訊' : '已暫停公告本期座位資訊');
                 });
             };
 
@@ -2046,9 +2064,20 @@
                         addressRegions: ctx.appConfig.addressRegions || DEFAULT_ADDRESS_REGIONS
                     }, { merge: true });
                     let count = 0;
+                    const seatByStudentId = {};
+                    Object.entries(ctx.seatingArrangements || {}).forEach(([routeId, arrangement]) => {
+                        Object.entries(arrangement?.seats || {}).forEach(([seatId, assignment]) => {
+                            if (!assignment?.studentId) return;
+                            seatByStudentId[assignment.studentId] = {
+                                routeName: ctx.routes.find(route => route.id === (assignment.assignedVehicleRouteId || routeId))?.name || assignment.assignedVehicleRouteId || routeId,
+                                seatId,
+                                stopName: assignment.assignedStopName || ''
+                            };
+                        });
+                    });
                     for (const student of ctx.students) {
                         if (!student.lookupKey) continue;
-                        await ctx.upsertParentQuerySummary(student.lookupKey, buildParentQuerySummary(student));
+                        await ctx.upsertParentQuerySummary(student.lookupKey, buildParentQuerySummary({ ...student, assignedSeat: seatByStudentId[student.id] || null }));
                         count += 1;
                     }
                     ctx.showMessage(`已建立 ${count} 筆家長查詢摘要；沒有修改任何學生資料。`);
@@ -2950,6 +2979,15 @@
                                     <button type="button" onClick={toggleEligibilityResultsPublished} className={`rounded-lg px-4 py-3 text-sm font-bold text-white shadow-sm transition ${ctx.appConfig.eligibilityResultsPublished === true ? 'bg-slate-600 hover:bg-slate-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}><i className={`ph-bold ${ctx.appConfig.eligibilityResultsPublished === true ? 'ph-eye-slash' : 'ph-broadcast'} mr-2`}></i>{ctx.appConfig.eligibilityResultsPublished === true ? '暫停公告' : '公告家長資格結果'}</button>
                                 </div>
                             </div>
+                            <div className={`rounded-xl border p-5 shadow-sm ${ctx.appConfig.seatAssignmentsPublished === true ? 'border-indigo-200 bg-indigo-50' : 'border-slate-200 bg-slate-50'}`}>
+                                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                                    <div>
+                                        <h3 className={`font-bold ${ctx.appConfig.seatAssignmentsPublished === true ? 'text-indigo-900' : 'text-slate-800'}`}><i className={`ph-fill ${ctx.appConfig.seatAssignmentsPublished === true ? 'ph-broadcast' : 'ph-eye-slash'} mr-2 text-xl`}></i>本期座位資訊公告</h3>
+                                        <p className={`mt-2 text-sm leading-6 ${ctx.appConfig.seatAssignmentsPublished === true ? 'text-indigo-800' : 'text-slate-600'}`}>{ctx.appConfig.seatAssignmentsPublished === true ? '目前已公告：符合資格的家長可在查詢頁看到自己的車上座位。' : '目前尚未公告：家長只能看到資格結果，不會看到車上座位。'}</p>
+                                    </div>
+                                    <button type="button" onClick={toggleSeatAssignmentsPublished} className={`rounded-lg px-4 py-3 text-sm font-bold text-white shadow-sm transition ${ctx.appConfig.seatAssignmentsPublished === true ? 'bg-slate-600 hover:bg-slate-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}><i className={`ph-bold ${ctx.appConfig.seatAssignmentsPublished === true ? 'ph-eye-slash' : 'ph-broadcast'} mr-2`}></i>{ctx.appConfig.seatAssignmentsPublished === true ? '暫停座位公告' : '公告家長座位資訊'}</button>
+                                </div>
+                            </div>
                             <div className="rounded-xl border border-violet-200 bg-violet-50 p-5 shadow-sm">
                                 <h3 className="font-bold text-violet-900"><i className="ph-fill ph-upload-simple mr-2"></i>匯入本機比對結果</h3>
                                 <p className="mt-2 text-sm leading-6 text-violet-800">請上傳本機工具下載的「校車資格本機比對結果.csv」。系統會先預覽分類；只有按下確認套用後，才會更新資格狀態。Excel 原始資料、完整地址及家長電話不會上傳。</p>
@@ -3817,12 +3855,13 @@
             if (!ctx.isAdminLoggedIn) return null;
 
             const currentSeating = ctx.seatingArrangements[seatingKey]?.seats || {};
+            const eligibleStudents = ctx.students.filter(student => student.busEligibilityStatus === '已確認符合');
             const afternoonStudentIds = new Set((ctx.afternoonLoopAssignments || [])
                 .filter(record => record.scheduleType === 'fixed' && record.vehicle === afternoonVehicleName && record.included !== false)
                 .map(record => record.studentId));
             const routeStudents = isAfternoonVehicle
-                ? ctx.students.filter(s => afternoonStudentIds.has(s.id))
-                : ctx.students.filter(s => s.routeId === routeId);
+                ? eligibleStudents.filter(s => afternoonStudentIds.has(s.id))
+                : eligibleStudents.filter(s => s.routeId === routeId);
             const assignedStudentIds = isAfternoonVehicle
                 ? Object.values(currentSeating).map(s => s.studentId)
                 : Object.entries(ctx.seatingArrangements || {})
@@ -3856,8 +3895,8 @@
                 const base = isAfternoonVehicle
                     ? routeStudents
                     : studentPoolRouteId === 'all'
-                    ? ctx.students
-                    : ctx.students.filter(s => s.routeId === (studentPoolRouteId === 'current' ? routeId : studentPoolRouteId));
+                    ? eligibleStudents
+                    : eligibleStudents.filter(s => s.routeId === (studentPoolRouteId === 'current' ? routeId : studentPoolRouteId));
                 return base.filter(s => !assignedStudentIdSet.has(s.id));
             };
             const unassignedStudents = sortStudentsForSeating(getPoolStudents());
@@ -3885,6 +3924,23 @@
                 color: existing.color || getGenderSeatColor(student.gender),
                 locked: existing.locked || false
             });
+            const syncChangedSeatSummaries = async (previousSeats, nextSeats, routeKey = seatingKey) => {
+                const affectedIds = new Set([
+                    ...Object.values(previousSeats || {}).map(item => item?.studentId),
+                    ...Object.values(nextSeats || {}).map(item => item?.studentId)
+                ].filter(Boolean));
+                await Promise.all([...affectedIds].map(studentId => {
+                    const student = ctx.students.find(item => item.id === studentId);
+                    if (!student) return Promise.resolve();
+                    const match = Object.entries(nextSeats || {}).find(([, assignment]) => assignment?.studentId === studentId);
+                    const assignedSeat = match ? {
+                        routeName: getRouteName(match[1].assignedVehicleRouteId || routeKey),
+                        seatId: match[0],
+                        stopName: match[1].assignedStopName || ''
+                    } : null;
+                    return ctx.updateParentSeatSummary(student, assignedSeat);
+                }));
+            };
 
             const handleAutoAssign = () => {
                 if (!routeId) return;
@@ -3997,6 +4053,7 @@
                     boys.forEach(b => { if (overflowRight.length) newSeats[overflowRight.shift()] = seatPayload(b); else { const mid = availableSeatIds({ side: 'M' })[0]; if (mid) newSeats[mid] = seatPayload(b); } });
                     girls.forEach(g => { if (overflowLeft.length) newSeats[overflowLeft.shift()] = seatPayload(g); else { const mid = availableSeatIds({ side: 'M' })[0]; if (mid) newSeats[mid] = seatPayload(g); } });
                     await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: newSeats });
+                    await syncChangedSeatSummaries(currentSeating, newSeats);
                     const seatedCount = Object.keys(newSeats).length;
                     ctx.showMessage(`自動排座完成，已保留 ${Object.keys(reservedSeats).length} 個既有座位，前排需求 ${frontNeedCount} 位，手足群組 ${siblingGroupCount} 組`);
                 });
@@ -4012,6 +4069,7 @@
                 const routeName = currentRoute?.name || '目前路線';
                 ctx.showConfirm(`確定要清空「${routeName}」的全部座位嗎？這只會撤除座位安排，不會刪除學生報名資料。`, async () => {
                     await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: {} });
+                    await syncChangedSeatSummaries(currentSeating, {});
                     setSelectedSeat(null);
                     ctx.showMessage(`已清空「${routeName}」的 ${seatCount} 個座位安排`);
                 });
@@ -4043,12 +4101,14 @@
                         if (changed) writes.push(setDoc(ctx.getDocRef('seatingArrangements', otherRouteId), { seats: otherSeats }));
                     });
                     await Promise.all(writes);
+                    await syncChangedSeatSummaries(currentSeating, ns);
                 } else if (sourceSeatId) {
                     if (sourceSeatId === targetSeatId) return;
                     const temp = ns[sourceSeatId];
                     if (ns[targetSeatId]) { ns[sourceSeatId] = ns[targetSeatId]; } else { delete ns[sourceSeatId]; }
                     if (temp) ns[targetSeatId] = temp;
                     await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns });
+                    await syncChangedSeatSummaries(currentSeating, ns);
                 }
             };
 
@@ -4068,11 +4128,11 @@
                     const ns = { ...currentSeating }, tmp = ns[selectedSeat];
                     if (ns[seatId]) ns[selectedSeat] = ns[seatId]; else delete ns[selectedSeat];
                     if (tmp) ns[seatId] = tmp;
-                    await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns }); setSelectedSeat(null);
+                    await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns }); await syncChangedSeatSummaries(currentSeating, ns); setSelectedSeat(null);
                 }
             };
 
-            const removeSeat = async (id, e) => { e.stopPropagation(); const ns = { ...currentSeating }; delete ns[id]; await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns }); };
+            const removeSeat = async (id, e) => { e.stopPropagation(); const ns = { ...currentSeating }; delete ns[id]; await setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns }); await syncChangedSeatSummaries(currentSeating, ns); };
             const toggleSeatLock = async (id, e) => {
                 e.stopPropagation();
                 const ns = { ...currentSeating };
@@ -4270,7 +4330,7 @@
                         </div>
                         {privacyMode && <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-700"><i className="ph-fill ph-shield-check mr-1"></i>公開顯示中：姓名已隱藏中間一字，只影響畫面，不會修改學生資料。</div>}
                         <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-4 py-2 text-sm leading-6 text-blue-800">
-                            <i className={`ph-fill ${isAfternoonVehicle ? 'ph-sun' : 'ph-arrows-left-right'} mr-1`}></i>{isAfternoonVehicle ? `環線座位：只顯示已固定安排到${afternoonVehicleName}的學生；此座位表獨立於早上各路線。` : '跨線排座：可把其他路線學生拖到目前這台車，學生原本報名路線不會被改，只會記錄實際座位。'}
+                            <i className={`ph-fill ${isAfternoonVehicle ? 'ph-sun' : 'ph-arrows-left-right'} mr-1`}></i>{isAfternoonVehicle ? `環線座位：只顯示已確認符合資格、且固定安排到${afternoonVehicleName}的學生；此座位表獨立於早上各路線。` : '座位候選只顯示已確認符合資格的學生；可跨線拖曳，但不會改變原本報名路線。'}
                         </div>
                         <div id="seat-export-source" className="bg-gray-100 rounded-2xl p-6 border-4 border-gray-200 overflow-x-auto">
                             <div className="min-w-[320px] max-w-lg mx-auto bg-white p-4 rounded-xl shadow-sm">
@@ -4347,7 +4407,7 @@
                         </div>
                         <div className="bg-white rounded-xl shadow-md p-5 border border-gray-100">
                             <button onClick={handleAutoAssign} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-md transition">一鍵自動排座</button>
-                            <p className="mt-3 text-xs leading-5 text-gray-500">規則：保留目前已安排座位，只排{isAfternoonVehicle ? '本環線' : '本路線'}尚未入座學生；備註有暈車或前排需求者優先前排；兄妹偏男生側，姊弟／姐弟偏女生側；其餘依車站順序排序，男生優先左側、女生優先右側。</p>
+                            <p className="mt-3 text-xs leading-5 text-gray-500">規則：保留目前已安排座位，只排已確認符合資格且尚未入座的{isAfternoonVehicle ? '本環線' : '本路線'}學生；備註有暈車或前排需求者優先前排；兄妹偏男生側，姊弟／姐弟偏女生側；其餘依車站順序排序，男生優先左側、女生優先右側。</p>
                             <div className="mt-4 border-t pt-4">
                                 <button onClick={handleClearRouteSeating} className="w-full rounded-xl border border-red-200 bg-red-50 py-3 font-bold text-red-600 transition hover:bg-red-100">
                                     <i className="ph-bold ph-eraser mr-1"></i>清空本{isAfternoonVehicle ? '環線' : '路線'}座位
@@ -4682,6 +4742,10 @@
                 }
                 await setDoc(ref, { students, updatedAt: Date.now() }, { merge: true });
             };
+            const updateParentSeatSummary = async (student, assignedSeat) => {
+                if (!student?.lookupKey) return;
+                await upsertParentQuerySummary(student.lookupKey, buildParentQuerySummary({ ...student, assignedSeat: assignedSeat || null }));
+            };
             const querySessionDocsByField = async (colName, fieldName, value) => {
                 if (!masterConfig?.activeSessionId || value === undefined || value === null || value === '') return [];
                 const snap = await getDocs(query(getCollectionRef(colName), where(fieldName, '==', value)));
@@ -4720,7 +4784,7 @@
             }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, studentsPublic, studentsPrivate]);
 
             const canSeeRoster = isAdminLoggedIn || isCaptainLoggedIn;
-            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signInSchoolPassword, linkSchoolPassword, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, removeParentQuerySummary, countPublicStudentsByRoute };
+            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signInSchoolPassword, linkSchoolPassword, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, removeParentQuerySummary, updateParentSeatSummary, countPublicStudentsByRoute };
 
             const renderContent = () => {
                 switch (currentPage) {
