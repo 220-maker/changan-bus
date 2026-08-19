@@ -1702,6 +1702,7 @@
             const [newRouteForm, setNewRouteForm] = useState({ name: '', capacity: '43', stops: '' });
             const [surveyDrafts, setSurveyDrafts] = useState([]);
             const [studentRouteFilter, setStudentRouteFilter] = useState('all');
+            const [studentEligibilityFilter, setStudentEligibilityFilter] = useState('已確認符合');
             const [settingsSection, setSettingsSection] = useState('general');
             const [leaveFilter, setLeaveFilter] = useState({ keyword: '', date: '', routeId: 'all', shift: 'all' });
             const [editLeaveModalOpen, setEditLeaveModalOpen] = useState(false);
@@ -1733,10 +1734,16 @@
             }, [ctx.appConfig]);
 
             const visibleStudents = useMemo(() => {
-                if (studentRouteFilter === 'all') return ctx.students;
+                const eligibilityMatched = ctx.students.filter(student => {
+                    if (studentEligibilityFilter === '全部') return true;
+                    if (studentEligibilityFilter === '已確認符合') return student.busEligibilityStatus === '已確認符合';
+                    if (studentEligibilityFilter === '不符合資格') return String(student.busEligibilityStatus || '').startsWith('不符合');
+                    return student.busEligibilityStatus !== '已確認符合' && !String(student.busEligibilityStatus || '').startsWith('不符合');
+                });
+                if (studentRouteFilter === 'all') return eligibilityMatched;
                 if (studentRouteFilter === 'afternoon-loop') return [];
-                return ctx.students.filter(s => s.routeId === studentRouteFilter);
-            }, [ctx.students, studentRouteFilter]);
+                return eligibilityMatched.filter(s => s.routeId === studentRouteFilter);
+            }, [ctx.students, studentRouteFilter, studentEligibilityFilter]);
             const currentSessionName = getActiveSessionName(ctx.masterConfig);
             const visibleEligibilityResults = useMemo(() => {
                 if (!eligibilityReport) return [];
@@ -2868,16 +2875,16 @@
                         return (parseInt(a.seat) || 999) - (parseInt(b.seat) || 999);
                     });
                 };
-                const routeLabel = studentRouteFilter === 'all' ? '全部學生' : (ctx.routes.find(r => r.id === studentRouteFilter)?.name || '指定路線');
+                const routeLabel = studentRouteFilter === 'all' ? `${studentEligibilityFilter}學生` : (ctx.routes.find(r => r.id === studentRouteFilter)?.name || '指定路線');
                 let csv = BOM;
 
                 if (studentRouteFilter === 'all') {
-                    csv += [`期程：${currentSessionName}`, `匯出日期：${getLocalDateString()}`, `總人數：${ctx.students.length}`].map(escapeCsv).join(",") + "\n\n";
+                    csv += [`期程：${currentSessionName}`, `資格篩選：${studentEligibilityFilter}`, `匯出日期：${getLocalDateString()}`, `總人數：${visibleStudents.length}`].map(escapeCsv).join(",") + "\n\n";
                     const routeGroups = ctx.routes.map(route => ({
                         route,
-                        students: ctx.students.filter(s => s.routeId === route.id)
+                        students: visibleStudents.filter(s => s.routeId === route.id)
                     }));
-                    const noRouteStudents = ctx.students.filter(s => !ctx.routes.some(route => route.id === s.routeId));
+                    const noRouteStudents = visibleStudents.filter(s => !ctx.routes.some(route => route.id === s.routeId));
                     routeGroups.forEach(({ route, students }) => {
                         csv += [route.name, `${students.length}人`].map(escapeCsv).join(",") + "\n";
                         csv += headers.map(escapeCsv).join(",") + "\n";
@@ -3312,6 +3319,7 @@
                             <i className="ph-fill ph-map-trifold text-2xl mr-2"></i> 路線與車站管理
                         </div>
                         <div className="p-4 space-y-4">
+                            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-6 text-emerald-800"><i className="ph-fill ph-check-circle mr-1"></i>下方各路線人數只統計「已確認符合」資格者，並依家長原先報名的路線與車站自動歸類；待人工確認與不符合資格者不納入。</div>
                             <form onSubmit={handleCreateRoute} className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4">
                                 <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
                                     <div className="md:col-span-3">
@@ -3336,7 +3344,7 @@
 
                             <div className="space-y-3">
                                 {ctx.routes.map(r => {
-                                    const currentCount = ctx.studentsPublic.filter(s => s.routeId === r.id).length;
+                                    const currentCount = ctx.students.filter(s => s.busEligibilityStatus === '已確認符合' && s.routeId === r.id).length;
                                     const isHidden = r.active === false;
                                     return (
                                         <div key={r.id} className={`rounded-xl border p-4 ${isHidden ? 'border-gray-200 bg-gray-50 opacity-75' : 'border-gray-200 bg-white'}`}>
@@ -3529,7 +3537,7 @@
                     <div className={`${adminTab === 'students' ? '' : 'hidden'} bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden`}>
                         <div className="bg-indigo-50 p-4 border-b border-indigo-100 font-bold text-indigo-800 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                             <div className="flex items-center">
-                                <span>{studentRouteFilter === 'afternoon-loop' ? '環線調度資料' : studentRouteFilter === 'all' ? '全部學生資料' : `${ctx.routes.find(r => r.id === studentRouteFilter)?.name || '指定路線'}學生資料`} (包含機密個資)</span>
+                                <span>{studentRouteFilter === 'afternoon-loop' ? '環線調度資料' : studentRouteFilter === 'all' ? `${studentEligibilityFilter}學生資料` : `${ctx.routes.find(r => r.id === studentRouteFilter)?.name || '指定路線'}｜${studentEligibilityFilter}學生資料`} (包含機密個資)</span>
                                 <span className="ml-2 bg-indigo-200 text-indigo-800 px-3 py-1 rounded-full text-xs">{studentRouteFilter === 'afternoon-loop' ? `${ctx.afternoonLoopAssignments.filter(record => record.scheduleType === 'fixed' && record.included !== false).length} 人` : `${visibleStudents.length} 人`}</span>
                             </div>
                             {studentRouteFilter !== 'afternoon-loop' && <div className="flex gap-2">
@@ -3537,6 +3545,12 @@
                                 <button onClick={exportToExcel} className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm flex items-center transition shadow-sm"><i className="ph-bold ph-microsoft-excel-logo mr-1"></i> 匯出 Excel</button>
                                 <button onClick={exportToPDF} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-sm flex items-center transition shadow-sm"><i className="ph-bold ph-file-pdf mr-1"></i> 匯出 PDF</button>
                             </div>}
+                        </div>
+                        <div className="border-b border-indigo-100 bg-indigo-50/40 p-3">
+                            <div className="mb-2 text-xs font-bold text-indigo-800"><i className="ph-fill ph-seal-check mr-1"></i>資格審核資料篩選（預設只看已確認符合，供路線與座位作業使用）</div>
+                            <div className="flex flex-wrap gap-2">
+                                {['已確認符合','待人工確認','不符合資格','全部'].map(label => <button key={label} type="button" onClick={() => setStudentEligibilityFilter(label)} className={`px-3 py-1.5 rounded-full text-sm font-bold border transition ${studentEligibilityFilter === label ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-gray-600 border-gray-200 hover:border-emerald-300'}`}>{label}</button>)}
+                            </div>
                         </div>
                         <div className="border-b border-indigo-100 bg-white p-3 flex flex-wrap gap-2">
                             <button
