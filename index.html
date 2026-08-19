@@ -1770,9 +1770,36 @@
             };
             const mapImportedEligibilityStatus = (status) => {
                 if (status === '已確認符合') return '已確認符合';
-                if (status === '不符合指定里') return '不符合資格';
-                return '待人工確認';
+                return '不符合資格';
             };
+            const normalizeEligibilityIdentityPart = (value) => normalizeText(value).replace(/\s+/g, '').replace(/[（）()]/g, '');
+            const buildEligibilityIdentityKey = (name, birthDate, guardianName) => {
+                const normalizedBirthDate = normalizeBirthDate(birthDate);
+                const parts = [normalizeEligibilityIdentityPart(name), normalizedBirthDate, normalizeEligibilityIdentityPart(guardianName)];
+                return parts.every(Boolean) ? parts.join('|') : '';
+            };
+            const importedEligibilityIdentityKey = (row) => {
+                const fingerprint = normalizeText(row['身分比對指紋']);
+                if (fingerprint) {
+                    const parts = fingerprint.split('|');
+                    if (parts.length === 3) return buildEligibilityIdentityKey(parts[0], parts[1], parts[2]);
+                }
+                return buildEligibilityIdentityKey(row['姓名'], row['出生日期'], row['監護人']);
+            };
+            const getSubmissionTimestamp = (student = {}) => {
+                const candidates = [student.submittedAt, student.createdAt, student.updatedAt];
+                for (const candidate of candidates) {
+                    const num = Number(candidate);
+                    if (Number.isFinite(num) && num > 0) return num;
+                }
+                return 0;
+            };
+            const getLatestSubmissionStudent = (students = []) => [...students].sort((a, b) => {
+                const aTime = getSubmissionTimestamp(a);
+                const bTime = getSubmissionTimestamp(b);
+                if (bTime !== aTime) return bTime - aTime;
+                return String(b.id || '').localeCompare(String(a.id || ''));
+            })[0] || null;
             const previewEligibilityImport = async (file) => {
                 setEligibilityImportFile(file || null);
                 setEligibilityImportPreview(null);
@@ -1780,31 +1807,36 @@
                 try {
                     const rows = parseEligibilityCsv(await file.text());
                     const activeSessionId = ctx.masterConfig?.activeSessionId || '';
-                    const studentById = new Map(ctx.students.map(student => [student.id, student]));
-                    const seen = new Set();
+                    const studentsByIdentity = new Map();
+                    ctx.students.forEach(student => {
+                        const key = buildEligibilityIdentityKey(student.name, student.birthDate, student.parentName);
+                        if (!key) return;
+                        studentsByIdentity.set(key, [...(studentsByIdentity.get(key) || []), student]);
+                    });
+                    const resultByIdentity = new Map();
                     const invalidRows = [];
-                    const results = [];
                     rows.forEach((row, index) => {
                         const rowNumber = index + 2;
                         const sessionId = row['期程ID'] || '';
-                        const studentId = row['校車系統學生編號'] || '';
-                        // 同時支援舊版「比對結果」與新版本機工具輸出的「目前結果」。
-                        // 若已有人工覆核，應優先採用人工覆核結果。
-                        const importedStatus = row['人工覆核結果'] || row['目前結果'] || row['比對結果'] || row['資格判定'] || row['系統初判'] || '';
-                        if (!studentId) return invalidRows.push(`第 ${rowNumber} 列缺少「校車系統學生編號」`);
+                        // 「目前結果」是本機工具的最終結果，應優先於舊版人工覆核欄位。
+                        const importedStatus = row['目前結果'] || row['人工覆核結果'] || row['比對結果'] || row['資格判定'] || row['系統初判'] || '';
                         if (!sessionId) return invalidRows.push(`第 ${rowNumber} 列缺少「期程ID」`);
                         if (sessionId !== activeSessionId) return invalidRows.push(`第 ${rowNumber} 列不是目前期程的結果`);
-                        if (seen.has(studentId)) return invalidRows.push(`第 ${rowNumber} 列的學生重複出現`);
-                        seen.add(studentId);
-                        const student = studentById.get(studentId);
-                        if (!student) return invalidRows.push(`第 ${rowNumber} 列找不到對應的目前報名學生`);
                         if (!importedStatus) return invalidRows.push(`第 ${rowNumber} 列缺少可辨識的比對結果`);
-                        results.push({
-                            student,
-                            nextStatus: mapImportedEligibilityStatus(importedStatus),
-                            importedStatus,
-                            note: row['說明'] || ''
-                        });
+                        const identityKey = importedEligibilityIdentityKey(row);
+                        if (!identityKey) return invalidRows.push(`第 ${rowNumber} 列缺少「姓名＋出生日期＋監護人姓名」`);
+                        if (resultByIdentity.has(identityKey)) return invalidRows.push(`第 ${rowNumber} 列與其他結果列身分重複`);
+                        resultByIdentity.set(identityKey, { importedStatus, note: row['說明'] || '', rowNumber });
+                    });
+                    const results = ctx.students.map(student => {
+                        const identityKey = buildEligibilityIdentityKey(student.name, student.birthDate, student.parentName);
+                        const matchingStudents = identityKey ? studentsByIdentity.get(identityKey) || [] : [];
+                        const imported = identityKey ? resultByIdentity.get(identityKey) : null;
+                        if (!identityKey) return { student, nextStatus: '不符合資格', importedStatus: '', note: '報名資料缺少姓名、出生日期或監護人姓名，無法與本機結果唯一對照。' };
+                        if (!imported) return { student, nextStatus: '不符合資格', importedStatus: '', note: '本機結果檔找不到相同的姓名、出生日期與監護人姓名。' };
+                        const latestStudent = getLatestSubmissionStudent(matchingStudents);
+                        if (matchingStudents.length > 1 && latestStudent?.id !== student.id) return { student, nextStatus: '不符合資格', importedStatus: imported.importedStatus, note: '同一身分有較晚送出的重複報名，本筆不採用。' };
+                        return { student, nextStatus: mapImportedEligibilityStatus(imported.importedStatus), importedStatus: imported.importedStatus, note: imported.note };
                     });
                     const summary = results.reduce((counts, row) => ({ ...counts, [getReviewGroup({ busEligibilityStatus: row.nextStatus })]: (counts[getReviewGroup({ busEligibilityStatus: row.nextStatus })] || 0) + 1 }), { '符合資格': 0, '待人工確認': 0, '不符合資格': 0 });
                     setEligibilityImportPreview({ fileName: file.name, results, invalidRows, summary });
