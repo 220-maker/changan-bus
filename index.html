@@ -325,10 +325,11 @@
             submittedAt: student.submittedAt || Date.now(),
             updatedAt: student.updatedAt || Date.now()
         });
-        const getParentEligibilityStatus = (status) => {
-            if (status === '已確認符合') return { label: '已確認符合', className: 'bg-emerald-100 text-emerald-700' };
-            if (status === '不符合指定里') return { label: '不符合指定里', className: 'bg-red-100 text-red-700' };
-            return { label: '資格審核中', className: 'bg-amber-100 text-amber-800' };
+        const getParentEligibilityStatus = (status, published) => {
+            if (!published) return { label: '資格結果尚未公告', className: 'bg-slate-100 text-slate-700', message: '資格結果完成後將由學校統一公告。' };
+            if (status === '已確認符合') return { label: '已確認符合', className: 'bg-emerald-100 text-emerald-700', message: '您符合本期交通車申請資格，後續乘車安排請依學校通知。' };
+            if (String(status || '').startsWith('不符合')) return { label: '本期未符合搭乘資格', className: 'bg-red-100 text-red-700', message: '如對資格結果有疑問，請洽學務處確認。' };
+            return { label: '資格審核中', className: 'bg-amber-100 text-amber-800', message: '您的資料正在審核，請留意學校後續通知。' };
         };
         const getStudentTimestamp = (student = {}) => {
             const candidates = [student.updatedAt, student.submittedAt, student.createdAt, student.id];
@@ -1044,7 +1045,7 @@
                                 results.map((student, idx) => {
                                     const routeName = ctx.routes.find(r => r.id === student.routeId)?.name || '未填寫';
                                     const questions = buildSurveyQuestions(ctx.appConfig);
-                                    const parentEligibility = getParentEligibilityStatus(student.busEligibilityStatus);
+                                    const parentEligibility = getParentEligibilityStatus(student.busEligibilityStatus, ctx.appConfig.eligibilityResultsPublished === true);
                                     return (
                                         <div key={student.id} className="rounded-xl border border-sky-100 bg-white p-5 shadow-sm">
                                             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 pb-3">
@@ -1057,6 +1058,7 @@
                                                     <span className={`rounded-full px-3 py-1 text-xs font-bold ${parentEligibility.className}`}>資格狀態：{parentEligibility.label}</span>
                                                 </div>
                                             </div>
+                                            <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600"><i className="ph-fill ph-info mr-1 text-slate-400"></i>{parentEligibility.message}</p>
                                             <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm leading-6">
                                                 <div><span className="font-bold text-gray-500">班級座號：</span>{student.class || '未填班級'} 班 / {student.seat || '未填'} 號</div>
                                                 <div><span className="font-bold text-gray-500">搭車路線：</span>{routeName} - {student.stopName || '未填車站'}</div>
@@ -1877,6 +1879,7 @@
                     rollCallClosed: ctx.appConfig.rollCallClosed === true,
                     rollCallStartDate: ctx.appConfig.rollCallStartDate || '',
                     rollCallEndDate: ctx.appConfig.rollCallEndDate || '',
+                    eligibilityResultsPublished: ctx.appConfig.eligibilityResultsPublished === true,
                     ...updates,
                     sessionId: ctx.masterConfig.activeSessionId
                 });
@@ -1892,6 +1895,17 @@
                     }, { merge: true });
                     if (student.lookupKey) await ctx.upsertParentQuerySummary(student.lookupKey, buildParentQuerySummary(updated));
                     ctx.showMessage(`已更新為「${status}」`);
+                });
+            };
+
+            const toggleEligibilityResultsPublished = () => {
+                const next = ctx.appConfig.eligibilityResultsPublished !== true;
+                const message = next
+                    ? '公告後，家長查詢自己的報名資料時，會立即看到「已確認符合」、「本期未符合搭乘資格」或「資格審核中」。確定公告嗎？'
+                    : '暫停後，家長將只看到「資格結果尚未公告」，但後台的資格判定、學生資料、路線與座位都不會改變。確定暫停嗎？';
+                ctx.showConfirm(message, async () => {
+                    await updateSessionFormConfig({ eligibilityResultsPublished: next });
+                    ctx.showMessage(next ? '已公告本期家長資格結果' : '已暫停公告本期家長資格結果');
                 });
             };
 
@@ -2855,6 +2869,15 @@
 
                     {adminTab === 'review' && (
                         <div className="space-y-5">
+                            <div className={`rounded-xl border p-5 shadow-sm ${ctx.appConfig.eligibilityResultsPublished === true ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
+                                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                                    <div>
+                                        <h3 className={`font-bold ${ctx.appConfig.eligibilityResultsPublished === true ? 'text-emerald-900' : 'text-amber-900'}`}><i className={`ph-fill ${ctx.appConfig.eligibilityResultsPublished === true ? 'ph-broadcast' : 'ph-eye-slash'} mr-2 text-xl`}></i>本期資格結果公告</h3>
+                                        <p className={`mt-2 text-sm leading-6 ${ctx.appConfig.eligibilityResultsPublished === true ? 'text-emerald-800' : 'text-amber-800'}`}>{ctx.appConfig.eligibilityResultsPublished === true ? '目前已公告：家長查詢時可看到自己的資格結果。' : '目前尚未公告：家長只能看到報名已送出，不會看到是否符合資格。'}</p>
+                                    </div>
+                                    <button type="button" onClick={toggleEligibilityResultsPublished} className={`rounded-lg px-4 py-3 text-sm font-bold text-white shadow-sm transition ${ctx.appConfig.eligibilityResultsPublished === true ? 'bg-slate-600 hover:bg-slate-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}><i className={`ph-bold ${ctx.appConfig.eligibilityResultsPublished === true ? 'ph-eye-slash' : 'ph-broadcast'} mr-2`}></i>{ctx.appConfig.eligibilityResultsPublished === true ? '暫停公告' : '公告家長資格結果'}</button>
+                                </div>
+                            </div>
                             <div className="rounded-xl border border-violet-200 bg-violet-50 p-5 shadow-sm">
                                 <h3 className="font-bold text-violet-900"><i className="ph-fill ph-upload-simple mr-2"></i>匯入本機比對結果</h3>
                                 <p className="mt-2 text-sm leading-6 text-violet-800">請上傳本機工具下載的「校車資格本機比對結果.csv」。系統會先預覽分類；只有按下確認套用後，才會更新資格狀態。Excel 原始資料、完整地址及家長電話不會上傳。</p>
@@ -4293,7 +4316,7 @@
             const [attendanceRecords, setAttendanceRecords] = useState([]);
             const [afternoonLoopAssignments, setAfternoonLoopAssignments] = useState([]);
             const [seatingArrangements, setSeatingArrangements] = useState({});
-            const [appConfig, setAppConfig] = useState({ adminPasswordHash: '', rollCallPasswordHash: '', addressRegions: DEFAULT_ADDRESS_REGIONS, registrationNotice: DEFAULT_REGISTRATION_NOTICE, surveyQuestions: [], surveyQuestionsConfigured: true, surveyTitle: DEFAULT_SURVEY_TITLE, surveyDescription: DEFAULT_SURVEY_DESCRIPTION, surveyNoteLabel: DEFAULT_SURVEY_NOTE_LABEL, surveyNoteEnabled: true, returnOptions: DEFAULT_RETURN_OPTIONS, registrationClosed: false, registrationDeadline: '', rollCallClosed: false, rollCallStartDate: '', rollCallEndDate: '' });
+            const [appConfig, setAppConfig] = useState({ adminPasswordHash: '', rollCallPasswordHash: '', addressRegions: DEFAULT_ADDRESS_REGIONS, registrationNotice: DEFAULT_REGISTRATION_NOTICE, surveyQuestions: [], surveyQuestionsConfigured: true, surveyTitle: DEFAULT_SURVEY_TITLE, surveyDescription: DEFAULT_SURVEY_DESCRIPTION, surveyNoteLabel: DEFAULT_SURVEY_NOTE_LABEL, surveyNoteEnabled: true, returnOptions: DEFAULT_RETURN_OPTIONS, registrationClosed: false, registrationDeadline: '', rollCallClosed: false, rollCallStartDate: '', rollCallEndDate: '', eligibilityResultsPublished: false });
 
             // 1. 初始化 Auth 與全域主控設定 (Master Config)
             useEffect(() => {
@@ -4444,7 +4467,8 @@
                     registrationDeadline: '',
                     rollCallClosed: false,
                     rollCallStartDate: '',
-                    rollCallEndDate: ''
+                    rollCallEndDate: '',
+                    eligibilityResultsPublished: false
                 };
                 const sessionFormConfigRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', `${sessionId}_main`);
                 const applyConfig = () => {
