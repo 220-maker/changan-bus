@@ -1876,6 +1876,46 @@
                 '待人工確認': ctx.students.filter(s => getReviewGroup(s) === '待人工確認'),
                 '不符合資格': ctx.students.filter(s => getReviewGroup(s) === '不符合資格')
             }), [ctx.students]);
+            const morningSeatByStudentId = useMemo(() => {
+                const result = {};
+                Object.entries(ctx.seatingArrangements || {}).forEach(([routeId, arrangement]) => {
+                    if (routeId.startsWith('afternoon-loop-')) return;
+                    Object.entries(arrangement?.seats || {}).forEach(([seatId, assignment]) => {
+                        if (assignment?.studentId) result[assignment.studentId] = { routeId, seatId };
+                    });
+                });
+                return result;
+            }, [ctx.seatingArrangements]);
+            const exportReviewGroupCsv = (label) => {
+                const headers = ['校車系統學生編號', '姓名', '班級', '座號', '路線', '車站', '資格狀態', '最後送出時間'];
+                const escapeCsv = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`;
+                const rows = (reviewGroups[label] || []).map(student => [
+                    student.id || '', student.name || '', student.class || '', student.seat || '',
+                    ctx.routes.find(route => route.id === student.routeId)?.name || '', student.stopName || '',
+                    student.busEligibilityStatus || '待學務資料比對', formatHistoryTime(student.submittedAt || student.createdAt)
+                ]);
+                const csv = '\uFEFF' + [headers, ...rows].map(row => row.map(escapeCsv).join(',')).join('\n');
+                downloadTextFile(csv, `${safeFileName(currentSessionName)}_${safeFileName(label)}_${getLocalDateString()}.csv`, 'text/csv;charset=utf-8;');
+            };
+            const deleteReviewStudent = (student) => {
+                const seatAssignment = morningSeatByStudentId[student.id];
+                if (seatAssignment) {
+                    const routeName = ctx.routes.find(route => route.id === seatAssignment.routeId)?.name || seatAssignment.routeId;
+                    ctx.showMessage(`「${student.name || '此學生'}」已有早上座位（${routeName} ${seatAssignment.seatId}），為保護座位安排，請先在座位安排中移出該座位後才能刪除。`, 'error');
+                    return;
+                }
+                ctx.showConfirm(`確定刪除「${student.name || '此學生'}」的報名資料嗎？會永久刪除本期公開資料、私人資料與家長查詢摘要，無法復原；不會刪除路線或早上座位。`, async () => {
+                    try {
+                        await deleteDoc(ctx.getDocRef('students_public', student.id));
+                        await deleteDoc(ctx.getDocRef('students_private', student.id));
+                        await ctx.removeParentQuerySummary(student.lookupKey, student.id);
+                        ctx.showMessage(`已刪除「${student.name || '此學生'}」的報名資料`);
+                    } catch (err) {
+                        console.error(err);
+                        ctx.showMessage('刪除報名資料失敗，請確認 Firebase 權限', 'error');
+                    }
+                });
+            };
 
             const adminTabs = [
                 { id: 'dashboard', label: '總覽', icon: 'ph-chart-line-up' },
@@ -2926,7 +2966,7 @@
                                 </div>}
                             </div>
                             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">{Object.entries(reviewGroups).map(([label, list]) => <button type="button" key={label} onClick={() => setReviewFilter(label)} className={`rounded-xl border p-5 text-left shadow-sm transition ${reviewFilter === label ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100' : 'border-gray-200 bg-white hover:border-indigo-200'}`}><p className="text-sm font-bold text-gray-500">{label}</p><p className="mt-1 text-3xl font-black text-indigo-700">{list.length}</p><p className="mt-1 text-xs text-gray-500">{label === '符合資格' ? '可安排座位' : label === '待人工確認' ? '待你確認' : '暫不安排座位'}</p></button>)}</div>
-                            <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b bg-gray-50 p-4"><div><h3 className="font-bold text-gray-800">{reviewFilter}</h3><p className="mt-1 text-xs text-gray-500">已安排的早上座位不會被自動刪除。</p></div><div className="flex gap-2">{['符合資格','待人工確認','不符合資格'].map(label => <button type="button" key={label} onClick={() => setReviewFilter(label)} className={`rounded-full px-3 py-1.5 text-sm font-bold ${reviewFilter === label ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 ring-1 ring-gray-200'}`}>{label}</button>)}</div></div><div className="divide-y">{reviewGroups[reviewFilter].map(student => <div key={student.id} className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between"><div><p className="font-bold text-gray-900">{student.name || '未填姓名'} <span className="ml-1 text-sm font-normal text-gray-500">{student.class || '未填班級'} {student.seat ? `${student.seat} 號` : ''}</span></p><p className="mt-1 text-sm text-gray-600">{ctx.routes.find(r => r.id === student.routeId)?.name || '未指定路線'}｜{student.stopName || '未指定車站'}｜目前：{student.busEligibilityStatus || '待學務資料比對'}</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => updateManualEligibility(student, '已確認符合')} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-700">確認符合</button><button type="button" onClick={() => updateManualEligibility(student, '不符合資格')} className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-bold text-white hover:bg-rose-700">確認不符合</button><button type="button" onClick={() => updateManualEligibility(student, '待人工確認')} className="rounded-lg bg-amber-100 px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-200">維持待確認</button></div></div>)}{reviewGroups[reviewFilter].length === 0 && <div className="p-10 text-center text-sm text-gray-500">這個分類目前沒有學生。</div>}</div></div>
+                            <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b bg-gray-50 p-4"><div><h3 className="font-bold text-gray-800">{reviewFilter}</h3><p className="mt-1 text-xs text-gray-500">可下載目前分類；刪除前會檢查是否已有早上座位。</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => exportReviewGroupCsv(reviewFilter)} className="rounded-full bg-slate-700 px-3 py-1.5 text-sm font-bold text-white hover:bg-slate-800"><i className="ph-bold ph-download-simple mr-1"></i>下載 CSV</button>{['符合資格','待人工確認','不符合資格'].map(label => <button type="button" key={label} onClick={() => setReviewFilter(label)} className={`rounded-full px-3 py-1.5 text-sm font-bold ${reviewFilter === label ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 ring-1 ring-gray-200'}`}>{label}</button>)}</div></div><div className="divide-y">{reviewGroups[reviewFilter].map(student => <div key={student.id} className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between"><div><p className="font-bold text-gray-900">{student.name || '未填姓名'} <span className="ml-1 text-sm font-normal text-gray-500">{student.class || '未填班級'} {student.seat ? `${student.seat} 號` : ''}</span></p><p className="mt-1 text-sm text-gray-600">{ctx.routes.find(r => r.id === student.routeId)?.name || '未指定路線'}｜{student.stopName || '未指定車站'}｜目前：{student.busEligibilityStatus || '待學務資料比對'}</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => updateManualEligibility(student, '已確認符合')} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-700">確認符合</button><button type="button" onClick={() => updateManualEligibility(student, '不符合資格')} className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-bold text-white hover:bg-rose-700">確認不符合</button><button type="button" onClick={() => updateManualEligibility(student, '待人工確認')} className="rounded-lg bg-amber-100 px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-200">維持待確認</button>{reviewFilter !== '符合資格' && <button type="button" onClick={() => deleteReviewStudent(student)} className="rounded-lg bg-slate-700 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800"><i className="ph-bold ph-trash mr-1"></i>刪除報名</button>}</div></div>)}{reviewGroups[reviewFilter].length === 0 && <div className="p-10 text-center text-sm text-gray-500">這個分類目前沒有學生。</div>}</div></div>
                         </div>
                     )}
 
@@ -4629,6 +4669,19 @@
                     updatedAt: Date.now()
                 }, { merge: true });
             };
+            const removeParentQuerySummary = async (lookupKey, studentId) => {
+                if (!masterConfig?.activeSessionId || !lookupKey || !studentId) return;
+                const ref = getParentQueryRef(lookupKey);
+                const snap = await getDoc(ref);
+                if (!snap.exists()) return;
+                const students = { ...(snap.data().students || {}) };
+                delete students[studentId];
+                if (Object.keys(students).length === 0) {
+                    await deleteDoc(ref);
+                    return;
+                }
+                await setDoc(ref, { students, updatedAt: Date.now() }, { merge: true });
+            };
             const querySessionDocsByField = async (colName, fieldName, value) => {
                 if (!masterConfig?.activeSessionId || value === undefined || value === null || value === '') return [];
                 const snap = await getDocs(query(getCollectionRef(colName), where(fieldName, '==', value)));
@@ -4667,7 +4720,7 @@
             }, [user, isMasterReady, masterConfig?.activeSessionId, isAdminLoggedIn, studentsPublic, studentsPrivate]);
 
             const canSeeRoster = isAdminLoggedIn || isCaptainLoggedIn;
-            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signInSchoolPassword, linkSchoolPassword, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, countPublicStudentsByRoute };
+            const ctx = { user, routes, activeRoutes, students, studentsPublic: dedupeLatestStudents(studentsPublic), rawStudentsPublic: studentsPublic, leaves, attendanceRecords, afternoonLoopAssignments, seatingArrangements, appConfig, masterConfig, isAdminLoggedIn, isCaptainLoggedIn, setIsCaptainLoggedIn, setCurrentPage, showMessage, showConfirm, signInSchoolAdmin, signInSchoolPassword, linkSchoolPassword, signOutAdmin, hashPassword, getDocRef, routeCounts, canSeeRoster, findParentQueryByLookupKey, upsertParentQuerySummary, removeParentQuerySummary, countPublicStudentsByRoute };
 
             const renderContent = () => {
                 switch (currentPage) {
