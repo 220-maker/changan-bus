@@ -1899,12 +1899,12 @@
                 return result;
             }, [ctx.seatingArrangements]);
             const exportReviewGroupCsv = (label) => {
-                const headers = ['校車系統學生編號', '姓名', '班級', '座號', '路線', '車站', '資格狀態', '最後送出時間'];
+                const headers = ['校車系統學生編號', '姓名', '班級', '座號', '路線', '車站', '資格狀態', '首次填寫時間（額滿排序依據）', '最後送出時間（重填紀錄）'];
                 const escapeCsv = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`;
                 const rows = (reviewGroups[label] || []).map(student => [
                     student.id || '', student.name || '', student.class || '', student.seat || '',
                     ctx.routes.find(route => route.id === student.routeId)?.name || '', student.stopName || '',
-                    student.busEligibilityStatus || '待學務資料比對', formatHistoryTime(student.submittedAt || student.createdAt)
+                    student.busEligibilityStatus || '待學務資料比對', formatHistoryTime(student.createdAt || student.submittedAt), formatHistoryTime(student.submittedAt || student.createdAt)
                 ]);
                 const csv = '\uFEFF' + [headers, ...rows].map(row => row.map(escapeCsv).join(',')).join('\n');
                 downloadTextFile(csv, `${safeFileName(currentSessionName)}_${safeFileName(label)}_${getLocalDateString()}.csv`, 'text/csv;charset=utf-8;');
@@ -2851,7 +2851,7 @@
                 const BOM = '\uFEFF';
                 const surveyQuestions = buildSurveyQuestions(ctx.appConfig);
                 const surveyHeaders = surveyQuestions.flatMap(q => [q.title, `${q.title}備註`]);
-                const headers = ["期程ID","校車系統學生編號","學號","班級","座號","姓名","性別","出生日期","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","戶籍里","戶籍校車資格","通訊／實際居住地址","實際居住里","實際居住資格"];
+                const headers = ["期程ID","校車系統學生編號","學號","班級","座號","姓名","性別","出生日期","首次填寫時間（額滿排序依據）","最後送出時間（重填紀錄）","路線","車站","乘車座位備註",...surveyHeaders,"固定不搭車時段","監護人","家長電話","學生電話","室內電話","戶籍地址","戶籍里","戶籍校車資格","通訊／實際居住地址","實際居住里","實際居住資格"];
                 const escapeCsv = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
                 const buildStudentRow = (s) => {
                     const routeName = ctx.routes.find(r => r.id === s.routeId)?.name || '';
@@ -2861,7 +2861,7 @@
                         const note = s.surveyNotes?.[q.id] || (idx === 0 ? (s.returnNote || '') : '');
                         return [answer, note];
                     });
-                    return [ctx.masterConfig?.activeSessionId || '', s.id || '', s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', normalizeBirthDate(s.birthDate), routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.residenceVillage || '', s.busEligibilityStatus || '', s.commAddr || '', s.actualVillage || '', s.actualEligibilityStatus || ''];
+                    return [ctx.masterConfig?.activeSessionId || '', s.id || '', s.sid || '', s.class || '', s.seat || '', s.name || '', s.gender || '', normalizeBirthDate(s.birthDate), formatHistoryTime(s.createdAt || s.submittedAt), formatHistoryTime(s.submittedAt || s.createdAt), routeName, s.stopName || '', s.seatNote || '', ...surveyValues, noRideText, s.parentName || '', s.parentMobile || '', s.mobile || '', s.homePhone || '', s.residenceAddr || '', s.residenceVillage || '', s.busEligibilityStatus || '', s.commAddr || '', s.actualVillage || '', s.actualEligibilityStatus || ''];
                 };
                 const sortForRoute = (list, route) => {
                     const stopOrder = route?.stops || [];
@@ -2915,12 +2915,12 @@
 
             // 供「本機資格比對工具」使用：固定為單一表頭，不輸出地址等不必要個資。
             const exportEligibilityComparisonCsv = () => {
-                const headers = ['期程ID','校車系統學生編號','學號','班級','座號','姓名','出生日期','監護人','家長電話','路線','車站'];
+                const headers = ['期程ID','校車系統學生編號','學號','班級','座號','姓名','出生日期','監護人','家長電話','首次填寫時間（額滿排序依據）','最後送出時間（重填紀錄）','路線','車站'];
                 const escapeCsv = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
                 const currentSessionId = ctx.masterConfig?.activeSessionId || '';
                 const rows = ctx.students.map(s => [
                     currentSessionId, s.id || '', s.sid || '', s.class || '', s.seat || '', s.name || '',
-                    normalizeBirthDate(s.birthDate), s.parentName || '', s.parentMobile || '',
+                    normalizeBirthDate(s.birthDate), s.parentName || '', s.parentMobile || '', formatHistoryTime(s.createdAt || s.submittedAt), formatHistoryTime(s.submittedAt || s.createdAt),
                     ctx.routes.find(r => r.id === s.routeId)?.name || '', s.stopName || ''
                 ]);
                 const csv = '\uFEFF' + [headers, ...rows].map(row => row.map(escapeCsv).join(',')).join('\n');
@@ -3585,6 +3585,7 @@
                                             <td className="px-4 py-3 align-top">
                                                 <div className="font-bold text-gray-800">{s.name} ({s.gender})</div>
                                                 <div className="text-[10px] text-gray-500">{s.class}班 | 學號: {s.sid} | 座號: {s.seat}</div>
+                                                <div className="mt-1 text-[10px] font-bold text-indigo-700">首次填寫：{formatHistoryTime(s.createdAt || s.submittedAt)}</div>
                                             </td>
                                             <td className="px-4 py-3 text-xs text-gray-600 align-top">
                                                 <div><span className="font-bold text-indigo-700">路線：</span>{ctx.routes.find(r => r.id === s.routeId)?.name} - {s.stopName}</div>
