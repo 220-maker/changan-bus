@@ -394,6 +394,26 @@
             });
             return Array.from(byKey.values()).sort((a, b) => getStudentOrderValue(a) - getStudentOrderValue(b));
         };
+        // 家長查詢遇到同一位學生重填時，以最後送出時間為準；資格覆核或座位更新時間不能把舊報名重新排到前面。
+        const getParentQuerySubmissionTimestamp = (student = {}) => {
+            const candidates = [student.submittedAt, student.createdAt, student.updatedAt, student.id];
+            for (const candidate of candidates) {
+                const num = Number(candidate);
+                if (Number.isFinite(num) && num > 0) return num;
+            }
+            return 0;
+        };
+        const dedupeLatestParentQueryStudents = (list = []) => {
+            const byKey = new Map();
+            list.forEach(student => {
+                const key = getStudentDedupeKey(student);
+                const current = byKey.get(key);
+                if (!current || getParentQuerySubmissionTimestamp(student) >= getParentQuerySubmissionTimestamp(current)) {
+                    byKey.set(key, student);
+                }
+            });
+            return Array.from(byKey.values()).sort((a, b) => getStudentOrderValue(a) - getStudentOrderValue(b));
+        };
         const findExistingStudentId = (list = [], formData = {}) => {
             for (const { key, strict } of getStudentMatchKeys(formData)) {
                 const matches = list.filter(student => getStudentDedupeKey(student) === key);
@@ -997,7 +1017,7 @@
                 try {
                     const parentQuery = await ctx.findParentQueryByLookupKey(lookupKey);
                     const matched = Object.values(parentQuery?.students || {});
-                    setResults(matched.sort((a, b) => getStudentOrderValue(a) - getStudentOrderValue(b)));
+                    setResults(dedupeLatestParentQueryStudents(matched));
                     setSearched(true);
                 } catch (err) {
                     console.error(err);
@@ -1948,7 +1968,8 @@
             };
 
             const updateSessionFormConfig = async (updates) => {
-                if (!ctx.user || !ctx.masterConfig?.activeSessionId) return;
+                if (!ctx.user) throw new Error('目前尚未登入後台帳號');
+                if (!ctx.masterConfig?.activeSessionId) throw new Error('找不到目前使用中的期程');
                 await setDoc(ctx.getDocRef('config', 'main'), {
                     registrationNotice: ctx.appConfig.registrationNotice || DEFAULT_REGISTRATION_NOTICE,
                     surveyQuestions: Array.isArray(ctx.appConfig.surveyQuestions) ? ctx.appConfig.surveyQuestions : [],
@@ -2000,10 +2021,14 @@
                     ? '公告後，已確認符合資格的家長可在查詢頁看到自己的車上座位；尚未排座者會看到「座位尚未安排」。確定公告嗎？'
                     : '暫停後，家長將不再看到車上座位；後台座位安排不會改變。確定暫停嗎？';
                 ctx.showConfirm(message, async () => {
-                    if (next) await buildParentQueryIndex();
+                    // 公告開關必須優先完成；家長摘要同步失敗時，不能讓公告設定也跟著失敗。
                     await updateSessionFormConfig({ seatAssignmentsPublished: next });
                     ctx.showMessage(next ? '已公告本期座位資訊' : '已暫停公告本期座位資訊');
+                    if (next) buildParentQueryIndex();
                 });
+            };
+            const openParentLookupPreview = () => {
+                ctx.setCurrentPage('lookup');
             };
 
             const loadHistorySession = async (sessionId) => {
@@ -2993,6 +3018,15 @@
                                         <p className={`mt-2 text-sm leading-6 ${ctx.appConfig.seatAssignmentsPublished === true ? 'text-indigo-800' : 'text-slate-600'}`}>{ctx.appConfig.seatAssignmentsPublished === true ? '目前已公告：符合資格的家長可在查詢頁看到自己的車上座位。' : '目前尚未公告：家長只能看到資格結果，不會看到車上座位。'}</p>
                                     </div>
                                     <button type="button" onClick={toggleSeatAssignmentsPublished} className={`rounded-lg px-4 py-3 text-sm font-bold text-white shadow-sm transition ${ctx.appConfig.seatAssignmentsPublished === true ? 'bg-slate-600 hover:bg-slate-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}><i className={`ph-bold ${ctx.appConfig.seatAssignmentsPublished === true ? 'ph-eye-slash' : 'ph-broadcast'} mr-2`}></i>{ctx.appConfig.seatAssignmentsPublished === true ? '暫停座位公告' : '公告家長座位資訊'}</button>
+                                </div>
+                            </div>
+                            <div className="rounded-xl border border-sky-200 bg-sky-50 p-5 shadow-sm">
+                                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                                    <div>
+                                        <h3 className="font-bold text-sky-900"><i className="ph-fill ph-magnifying-glass mr-2 text-xl"></i>家長查詢預覽</h3>
+                                        <p className="mt-2 text-sm leading-6 text-sky-800">以家長實際會看到的查詢頁面預覽資格與座位顯示；不會公告、不會修改任何資料。</p>
+                                    </div>
+                                    <button type="button" onClick={openParentLookupPreview} className="rounded-lg bg-sky-600 px-4 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-sky-700"><i className="ph-bold ph-arrow-square-out mr-2"></i>開啟家長查詢預覽</button>
                                 </div>
                             </div>
                             <div className="rounded-xl border border-violet-200 bg-violet-50 p-5 shadow-sm">
@@ -4686,7 +4720,20 @@
             const activeRoutes = useMemo(() => routes.filter(r => r.active !== false), [routes]);
 
             const showMessage = (text, type = 'success') => { setMessage({ text, type }); setTimeout(() => setMessage(null), 3000); };
-            const showConfirm = (msg, action) => { setConfirmDialog({ msg, action: () => { action(); setConfirmDialog(null); } }); };
+            const showConfirm = (msg, action) => {
+                setConfirmDialog({
+                    msg,
+                    action: async () => {
+                        setConfirmDialog(null);
+                        try {
+                            await action();
+                        } catch (err) {
+                            console.error('confirmed action failed', err);
+                            showMessage(`操作失敗：${err?.message || '請確認網路與 Firebase 權限後再試'}`, 'error');
+                        }
+                    }
+                });
+            };
             const signInSchoolAdmin = async (expectedEmail) => {
                 const provider = new GoogleAuthProvider();
                 provider.setCustomParameters({ login_hint: expectedEmail, hd: SCHOOL_ADMIN_DOMAIN });
