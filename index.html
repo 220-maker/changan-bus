@@ -2089,7 +2089,8 @@
                         seatAssignmentsPublished: true,
                         publicSeatMap: buildPublicSeatMap(ctx.seatingArrangements)
                     });
-                    await buildParentQueryIndex();
+                    const summaryUpdated = await buildParentQueryIndex();
+                    if (!summaryUpdated) throw new Error('家長查詢摘要未完成更新');
                     ctx.showMessage('已更新家長匿名座位圖');
                 });
             };
@@ -2155,7 +2156,10 @@
             };
 
             const buildParentQueryIndex = async () => {
-                if (!ctx.students.length) return ctx.showMessage('目前期程沒有可建立查詢資料的學生', 'error');
+                if (!ctx.students.length) {
+                    ctx.showMessage('目前期程沒有可建立查詢資料的學生', 'error');
+                    return false;
+                }
                 setParentQueryMigrationBusy(true);
                 try {
                     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'public'), {
@@ -2181,9 +2185,11 @@
                         count += 1;
                     }
                     ctx.showMessage(`已建立 ${count} 筆家長查詢摘要；沒有修改任何學生資料。`);
+                    return true;
                 } catch (err) {
                     console.error(err);
                     ctx.showMessage('建立家長查詢摘要失敗，請確認 Firebase 權限', 'error');
+                    return false;
                 } finally {
                     setParentQueryMigrationBusy(false);
                 }
