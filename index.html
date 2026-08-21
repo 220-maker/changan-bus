@@ -24,7 +24,7 @@
     <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, EmailAuthProvider, GoogleAuthProvider, linkWithCredential, signInWithCustomToken, signInAnonymously, signInWithEmailAndPassword, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDoc, getDocs, query, where, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const { useState, useEffect, useMemo } = React;
 
@@ -484,6 +484,20 @@
                     .map(item => [item.id, Boolean(arrangement?.seats?.[item.id]?.studentId)]))
             ])
         );
+
+        // 座位安排文件與匿名座位圖都以路線 id 作為 key；舊摘要若誤存路線名稱，
+        // 家長查詢時仍要先還原為正確的 routeId，不能拿名稱直接索引 publicSeatMap。
+        const resolvePublicSeatMapRouteId = ({ assignedSeat, fallbackRouteId, routes = [], publicSeatMap = {} } = {}) => {
+            const candidates = [assignedSeat?.routeId, assignedSeat?.assignedVehicleRouteId, fallbackRouteId, assignedSeat?.routeName]
+                .map(value => String(value || '').trim())
+                .filter(Boolean);
+            for (const candidate of candidates) {
+                const route = routes.find(item => String(item?.id || '').trim() === candidate || String(item?.name || '').trim() === candidate);
+                if (route?.id !== undefined && route?.id !== null) return String(route.id);
+                if (Object.prototype.hasOwnProperty.call(publicSeatMap || {}, candidate)) return candidate;
+            }
+            return candidates[0] || '';
+        };
 
         const ParentSeatMap = ({ student, routeName, seatMap }) => {
             const ownSeatId = student.assignedSeat?.seatId || '';
@@ -1110,10 +1124,19 @@
                                     const routeName = ctx.routes.find(r => r.id === student.routeId)?.name || '未填寫';
                                     const questions = buildSurveyQuestions(ctx.appConfig);
                                     const parentEligibility = getParentEligibilityStatus(student.busEligibilityStatus, ctx.appConfig.eligibilityResultsPublished === true);
-                                    const assignedRouteId = student.assignedSeat?.routeId
-                                        || ctx.routes.find(route => route.name === student.assignedSeat?.routeName)?.id
-                                        || student.routeId;
-                                    const parentSeatMap = student.assignedSeat ? (ctx.appConfig.publicSeatMap?.[assignedRouteId] || parentSeatMaps?.[assignedRouteId]) : null;
+                                    const allPublicSeatMaps = {
+                                        ...(parentSeatMaps || {}),
+                                        ...(ctx.appConfig.publicSeatMap || {})
+                                    };
+                                    const assignedRouteId = resolvePublicSeatMapRouteId({
+                                        assignedSeat: student.assignedSeat,
+                                        fallbackRouteId: student.routeId,
+                                        routes: ctx.routes,
+                                        publicSeatMap: allPublicSeatMaps
+                                    });
+                                    const parentSeatMap = student.assignedSeat && assignedRouteId
+                                        ? (ctx.appConfig.publicSeatMap?.[assignedRouteId] || parentSeatMaps?.[assignedRouteId] || null)
+                                        : null;
                                     return (
                                         <div key={student.id} className="rounded-xl border border-sky-100 bg-white p-5 shadow-sm">
                                             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 pb-3">
@@ -2073,13 +2096,16 @@
                     ? '公告後，已確認符合資格的家長可在查詢頁看到自己的車上座位；尚未排座者會看到「座位尚未安排」。確定公告嗎？'
                     : '暫停後，家長將不再看到車上座位；後台座位安排不會改變。確定暫停嗎？';
                 ctx.showConfirm(message, async () => {
-                    // 公告開關必須優先完成；家長摘要同步失敗時，不能讓公告設定也跟著失敗。
+                    const publicSeatMap = next ? buildPublicSeatMap(ctx.seatingArrangements) : {};
                     await updateSessionFormConfig({
                         seatAssignmentsPublished: next,
-                        publicSeatMap: next ? buildPublicSeatMap(ctx.seatingArrangements) : {}
+                        publicSeatMap
                     });
+                    if (next) {
+                        const summaryUpdated = await buildParentQueryIndex(publicSeatMap);
+                        if (!summaryUpdated) throw new Error('家長查詢摘要未完成更新');
+                    }
                     ctx.showMessage(next ? '已公告本期座位資訊' : '已暫停公告本期座位資訊');
-                    if (next) buildParentQueryIndex();
                 });
             };
             const refreshParentSeatMap = () => {
@@ -2089,7 +2115,7 @@
                         seatAssignmentsPublished: true,
                         publicSeatMap: buildPublicSeatMap(ctx.seatingArrangements)
                     });
-                    const summaryUpdated = await buildParentQueryIndex();
+                    const summaryUpdated = await buildParentQueryIndex(buildPublicSeatMap(ctx.seatingArrangements));
                     if (!summaryUpdated) throw new Error('家長查詢摘要未完成更新');
                     ctx.showMessage('已更新家長匿名座位圖');
                 });
@@ -2155,7 +2181,7 @@
                 return Number.isFinite(millis) && millis > 0 ? new Date(millis).toLocaleString('zh-TW') : '—';
             };
 
-            const buildParentQueryIndex = async () => {
+            const buildParentQueryIndex = async (publishedSeatMap = buildPublicSeatMap(ctx.seatingArrangements)) => {
                 if (!ctx.students.length) {
                     ctx.showMessage('目前期程沒有可建立查詢資料的學生', 'error');
                     return false;
@@ -2166,7 +2192,7 @@
                         addressRegions: ctx.appConfig.addressRegions || DEFAULT_ADDRESS_REGIONS
                     }, { merge: true });
                     let count = 0;
-                    const publicSeatMap = buildPublicSeatMap(ctx.seatingArrangements);
+                    const publicSeatMap = publishedSeatMap;
                     const seatByStudentId = {};
                     Object.entries(ctx.seatingArrangements || {}).forEach(([routeId, arrangement]) => {
                         Object.entries(arrangement?.seats || {}).forEach(([seatId, assignment]) => {
@@ -4050,7 +4076,13 @@
                 color: existing.color || getGenderSeatColor(student.gender),
                 locked: existing.locked || false
             });
-            const syncChangedSeatSummaries = async (previousSeats, nextSeats, routeKey = seatingKey) => {
+            const syncChangedSeatSummaries = async (previousSeats, nextSeats, routeKey = seatingKey, arrangementOverrides = {}) => {
+                const nextArrangements = {
+                    ...ctx.seatingArrangements,
+                    ...arrangementOverrides,
+                    [routeKey]: { ...(ctx.seatingArrangements[routeKey] || {}), seats: nextSeats || {} }
+                };
+                const publicSeatMap = buildPublicSeatMap(nextArrangements);
                 const affectedIds = new Set([
                     ...Object.values(previousSeats || {}).map(item => item?.studentId),
                     ...Object.values(nextSeats || {}).map(item => item?.studentId)
@@ -4065,9 +4097,9 @@
                         seatId: match[0],
                         stopName: match[1].assignedStopName || ''
                     } : null;
-                    return ctx.updateParentSeatSummary(student, assignedSeat);
+                    return ctx.updateParentSeatSummary(student, assignedSeat, ctx.appConfig.seatAssignmentsPublished === true ? publicSeatMap : null);
                 }));
-                await ctx.updatePublishedSeatMap(routeKey, nextSeats);
+                await ctx.updatePublishedSeatMap(nextArrangements);
             };
 
             const handleAutoAssign = () => {
@@ -4215,6 +4247,7 @@
                     Object.keys(ns).forEach(k => { if (ns[k].studentId === s.id) delete ns[k]; });
                     ns[targetSeatId] = seatPayload(s);
                     const writes = [setDoc(ctx.getDocRef('seatingArrangements', seatingKey), { seats: ns })];
+                    const arrangementOverrides = {};
                     Object.entries(ctx.seatingArrangements || {}).forEach(([otherRouteId, arrangement]) => {
                         if (otherRouteId === seatingKey) return;
                         if (isAfternoonVehicle ? !otherRouteId.startsWith('afternoon-loop-') : otherRouteId.startsWith('afternoon-loop-')) return;
@@ -4226,10 +4259,13 @@
                                 changed = true;
                             }
                         });
-                        if (changed) writes.push(setDoc(ctx.getDocRef('seatingArrangements', otherRouteId), { seats: otherSeats }));
+                        if (changed) {
+                            arrangementOverrides[otherRouteId] = { ...(arrangement || {}), seats: otherSeats };
+                            writes.push(setDoc(ctx.getDocRef('seatingArrangements', otherRouteId), { seats: otherSeats }));
+                        }
                     });
                     await Promise.all(writes);
-                    await syncChangedSeatSummaries(currentSeating, ns);
+                    await syncChangedSeatSummaries(currentSeating, ns, seatingKey, arrangementOverrides);
                 } else if (sourceSeatId) {
                     if (sourceSeatId === targetSeatId) return;
                     const temp = ns[sourceSeatId];
@@ -4886,21 +4922,30 @@
                 }
                 await setDoc(ref, { students, updatedAt: Date.now() }, { merge: true });
             };
-            const updateParentSeatSummary = async (student, assignedSeat) => {
+            const updateParentSeatSummary = async (student, assignedSeat, publicSeatMap = null) => {
                 if (!student?.lookupKey) return;
-                await upsertParentQuerySummary(student.lookupKey, buildParentQuerySummary({ ...student, assignedSeat: assignedSeat || null }));
+                await upsertParentQuerySummary(student.lookupKey, buildParentQuerySummary({ ...student, assignedSeat: assignedSeat || null }), publicSeatMap);
             };
-            const updatePublishedSeatMap = async (routeId, seats) => {
-                if (!appConfig.seatAssignmentsPublished || !masterConfig?.activeSessionId || !routeId) return;
-                const nextArrangements = {
-                    ...seatingArrangements,
-                    [routeId]: { ...(seatingArrangements[routeId] || {}), seats: seats || {} }
-                };
+            const syncParentQueryPublicSeatMap = async (publicSeatMap) => {
+                if (!masterConfig?.activeSessionId) return;
+                const prefix = `${masterConfig.activeSessionId}_`;
+                const snap = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'parent_queries'));
+                const targets = snap.docs.filter(item => item.id.startsWith(prefix));
+                if (!targets.length) return;
+                const batch = writeBatch(db);
+                const updatedAt = Date.now();
+                targets.forEach(item => batch.set(item.ref, { publicSeatMap, updatedAt }, { merge: true }));
+                await batch.commit();
+            };
+            const updatePublishedSeatMap = async (nextArrangements) => {
+                if (!appConfig.seatAssignmentsPublished || !masterConfig?.activeSessionId) return;
+                const publicSeatMap = buildPublicSeatMap(nextArrangements || seatingArrangements);
                 await setDoc(getDocRef('config', 'main'), {
-                    publicSeatMap: buildPublicSeatMap(nextArrangements),
+                    publicSeatMap,
                     sessionId: masterConfig.activeSessionId,
                     updatedAt: Date.now()
                 }, { merge: true });
+                await syncParentQueryPublicSeatMap(publicSeatMap);
             };
             const querySessionDocsByField = async (colName, fieldName, value) => {
                 if (!masterConfig?.activeSessionId || value === undefined || value === null || value === '') return [];
